@@ -690,53 +690,53 @@ struct Panel: View {
                 }
                 HStack(alignment: .center, spacing: 10) {
                     PortMap(lit: Set(s.usb.filter { $0.depth == 0 && $0.port > 0 }.map { m.portMap[$0.port - 1] }), charger: s.chargerSocket > 0 ? m.portMap[s.chargerSocket - 1] : nil)
-                    VStack(alignment: .leading, spacing: 7) {
-                        let room = 6 - (s.chargerSocket > 0 ? 1 : 0)       // six rows is what fits the screen
+                    VStack(alignment: .leading, spacing: 3) {
+                        let room = 8 - (s.chargerSocket > 0 ? 1 : 0)       // eight compact rows is what fits the screen
                         if s.chargerSocket > 0 {
                             HStack(spacing: 8) {
-                                Circle().fill(Ink.amber).frame(width: 6, height: 6)
-                                Text("Charger").font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
-                                Text(s.adapterName.replacingOccurrences(of: " Power Adapter", with: "").uppercased()).font(.system(size: 8.5, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
+                                Circle().fill(Ink.amber).frame(width: 5, height: 5)
+                                Text("Charger").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
+                                Text(s.adapterName.replacingOccurrences(of: " Power Adapter", with: "").uppercased()).font(.system(size: 8, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
                                 Spacer(minLength: 4)
                                 Button(action: { m.cyclePort(s.chargerSocket) }) {
-                                    Text(PortMap.names[m.portMap[s.chargerSocket - 1]]).font(.system(size: 8, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.amber)
-                                        .frame(width: 92, height: 15).background(Capsule().fill(Ink.amber.opacity(0.10))).contentShape(Rectangle())
+                                    Text(PortMap.names[m.portMap[s.chargerSocket - 1]]).font(.system(size: 7.5, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.amber)
+                                        .frame(width: 92, height: 13).background(Capsule().fill(Ink.amber.opacity(0.10))).contentShape(Rectangle())
                                 }.buttonStyle(.plain).help("Socket \(s.chargerSocket). Wrong place? Click to move it to the next position.")
                                 Text("POWER IN").font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 62, alignment: .trailing)
                                 Text("\(s.adapterW) W").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 44, alignment: .trailing)
-                            }.frame(height: 18)
+                            }.frame(height: 15)
                         }
                         if s.usb.isEmpty && s.wireless.isEmpty && s.chargerSocket == 0 {
-                            Text("Nothing plugged in").font(.system(size: 11, weight: .medium, design: .rounded)).foregroundColor(Ink.dim).frame(maxWidth: .infinity, alignment: .leading).frame(height: 18)
+                            Text("Nothing plugged in").font(.system(size: 11, weight: .medium, design: .rounded)).foregroundColor(Ink.dim).frame(maxWidth: .infinity, alignment: .leading).frame(height: 15)
                         }
                         ForEach(s.usb.prefix(room)) { d in
                             HStack(spacing: 8) {
-                                Circle().fill(Ink.green).frame(width: 6, height: 6).padding(.leading, CGFloat(min(d.depth, 3)) * 12)
-                                Text(d.name).font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
-                                Text(d.vendor.uppercased()).font(.system(size: 8.5, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
+                                Circle().fill(Ink.green).frame(width: 5, height: 5).padding(.leading, CGFloat(min(d.depth, 3)) * 12)
+                                Text(d.name).font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
+                                Text(d.vendor.uppercased()).font(.system(size: 8, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
                                 Spacer(minLength: 4)
                                 if d.depth == 0, d.port > 0 {
                                     Button(action: { m.cyclePort(d.port) }) {
-                                        Text(PortMap.names[m.portMap[d.port - 1]]).font(.system(size: 8, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.green)
-                                            .frame(width: 92, height: 15).background(Capsule().fill(Ink.green.opacity(0.10))).contentShape(Rectangle())
+                                        Text(PortMap.names[m.portMap[d.port - 1]]).font(.system(size: 7.5, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.green)
+                                            .frame(width: 92, height: 13).background(Capsule().fill(Ink.green.opacity(0.10))).contentShape(Rectangle())
                                     }.buttonStyle(.plain).help("Socket \(d.port). Wrong place? Click to move it to the next position.")
-                                } else { Color.clear.frame(width: 92, height: 15) }
+                                } else { Color.clear.frame(width: 92, height: 13) }
                                 Text(d.speed).font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 62, alignment: .trailing)
                                 Text("\(d.mA) mA").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 44, alignment: .trailing)
-                            }.frame(height: 18)
+                            }.frame(height: 15)
                         }
                         ForEach(s.wireless.prefix(max(0, room - min(room, s.usb.count)))) { d in
                             HStack(spacing: 8) {
-                                Circle().fill(Ink.blue).frame(width: 6, height: 6)
-                                Text(d.name).font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
-                                Text(d.kind.uppercased()).font(.system(size: 8.5, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
+                                Circle().fill(Ink.blue).frame(width: 5, height: 5)
+                                Text(d.name).font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
+                                Text(d.kind.uppercased()).font(.system(size: 8, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
                                 Spacer(minLength: 4)
-                                Text("WIRELESS").font(.system(size: 8, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.blue)
-                                    .frame(width: 92, height: 15).background(Capsule().fill(Ink.blue.opacity(0.12)))
+                                Text("WIRELESS").font(.system(size: 7.5, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.blue)
+                                    .frame(width: 92, height: 13).background(Capsule().fill(Ink.blue.opacity(0.12)))
                                 Text(d.left != nil || d.right != nil ? "L \(d.left.map(String.init) ?? "--") · R \(d.right.map(String.init) ?? "--")" : (d.box.map { "CASE \($0)" } ?? ""))
                                     .font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 62, alignment: .trailing)
                                 Text((d.main ?? (d.left != nil ? d.box : nil)).map { "\($0) %" } ?? ((d.left ?? d.right).map { _ in "" } ?? "--")).font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 44, alignment: .trailing)
-                            }.frame(height: 18)
+                            }.frame(height: 15)
                         }
                     }
                 }
@@ -1449,7 +1449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private var screenFrame: NSRect { (card.screen ?? item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900) }
     private func baseSize() -> NSSize { measure.sizeThatFits(in: NSSize(width: 672, height: 10_000)) }
-    private var rowCount: Int { min(6, model.s.usb.count + model.s.wireless.count + (model.s.chargerSocket > 0 ? 1 : 0)) }
+    private var rowCount: Int { min(8, model.s.usb.count + model.s.wireless.count + (model.s.chargerSocket > 0 ? 1 : 0)) }
     private func fit(place: Bool) {
         rows = rowCount
         let base = baseSize(), k = model.scale, size = NSSize(width: base.width * k, height: base.height * k), old = card.frame, vis = screenFrame
