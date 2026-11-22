@@ -463,6 +463,8 @@ final class Model: ObservableObject {
             self.onTick?(snap.cpu)
             // macOS takes the fans back after sleep; if what the Mac is doing no longer matches what is wanted, set it again
             if self.fanReady, !self.fanStale, snap.fanForced != self.fansWanted, -self.fanApplied.timeIntervalSinceNow > (self.fanNote.isEmpty ? 6 : 60) { self.applyFans() }
+            // while the helper is missing or out of date, look again now and then, so a fresh set-up is picked up without restarting Redline
+            else if !self.fanReady || self.fanStale, -self.fanApplied.timeIntervalSinceNow > 8 { self.applyFans() }
             var r = self.rec
             r[0] = max(r[0], snap.cpuTemp ?? 0); r[1] = max(r[1], snap.sysW ?? 0); if isOpen, settled { r[2] = max(r[2], snap.down) }
             if r != self.rec { self.rec = r; UserDefaults.standard.set(r, forKey: "records") }
@@ -1541,7 +1543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var card: Card!; private var host: NSHostingController<Root>!; private var measure: NSHostingController<Panel>!
     private let backdrop = Backdrop(frame: .zero)
     private let tap = AudioTap(); private var beat: Timer?
-    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?
+    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?; private var termSig: DispatchSourceSignal?
     private var outside: Any?; private var keys: Any?; private var lit = false
     private let sticky = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil   // testing only: stay open
 
@@ -1570,6 +1572,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signal(SIGUSR1, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
         src.setEventHandler { [weak self] in self?.toggle() }; src.resume(); sig = src
+        // Being told to stop from outside (a rebuild, a shutdown script) counts as quitting too, so the fans are always released.
+        signal(SIGTERM, SIG_IGN)
+        let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        term.setEventHandler { NSApp.terminate(nil) }; term.resume(); termSig = term
     }
     private var screenFrame: NSRect { (card.screen ?? item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900) }
     private func baseSize() -> NSSize { measure.sizeThatFits(in: NSSize(width: 672, height: 10_000)) }
