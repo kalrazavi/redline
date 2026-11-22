@@ -307,6 +307,7 @@ final class Probe {
 final class Model: ObservableObject {
     @Published var s = Snap()
     @Published var theme = Ink.glow
+    @Published var wide = false                                         // two-column layout, chosen by how far the corner is dragged
     @Published var scale: CGFloat = 1                                   // card size; always back to 1 when it opens
     @Published var vibe = UserDefaults.standard.bool(forKey: "vibe")    // music-reactive backdrop
     @Published var vibeNote = ""
@@ -711,10 +712,9 @@ struct Panel: View {
                     .padding(.leading, 10).padding(.trailing, 16)       // leaves the corner free for the resize grip
             }
     }
-    var body: some View {
+    @ViewBuilder private var gauges: some View {
         let s = m.s
         let throttled = s.speedLimit < 100
-        VStack(spacing: 12) {
             // header
             HStack(alignment: .center) {
                 HStack(spacing: 7) {
@@ -765,7 +765,9 @@ struct Panel: View {
                 CoreStrip(cores: s.cores.map { v($0) })
             }
             .padding(10).background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
-            // tiles
+    }
+    @ViewBuilder private var tiles: some View {
+        let s = m.s
             HStack(spacing: 10) {
                 Tile(title: "POWER IN", big: s.plugged ? (s.dcInW != nil ? w(s.dcInW) : "\(s.adapterW)") : "0.0", unit: "W",
                      sub: s.plugged ? "CHARGER \(s.adapterW) W" : "ON BATTERY", tint: s.plugged ? Ink.green : .white) { Spark(data: m.hIn, color: Ink.green, floor: 20) }
@@ -786,12 +788,22 @@ struct Panel: View {
                 Tile(title: "DISK READ", big: r.0, unit: r.1, sub: String(format: "%.1f GB SINCE BOOT", s.readTotal / 1e9)) { Spark(data: m.hRead, color: Ink.mid, floor: 500_000) }
                 Tile(title: "DISK WRITE", big: wr.0, unit: wr.1, sub: String(format: "%.1f GB SINCE BOOT", s.writeTotal / 1e9)) { Spark(data: m.hWrite, color: Ink.mid, floor: 500_000) }
             }
-            recordsRow
-            usbBay
-            footer
+    }
+    var layout: Bool? = nil        // nil = follow the model; set only for measuring and the preview pictures
+    private var wide: Bool { layout ?? m.wide }
+    var body: some View {
+        Group {
+            if wide {      // two columns: gauges left, numbers right
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(spacing: 12) { gauges; Spacer(minLength: 0); recordsRow }.frame(width: 568).frame(maxHeight: .infinity, alignment: .top)
+                    VStack(spacing: 12) { tiles; usbBay; Spacer(minLength: 0); footer }.frame(width: 568).frame(maxHeight: .infinity, alignment: .top)
+                }.fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: 12) { gauges; tiles; recordsRow; usbBay; footer }
+            }
         }
         .id(m.theme)
-        .padding(16).frame(width: 600)
+        .padding(16).frame(width: wide ? 1184 : 600)
         .background(ZStack {
             if solid { LinearGradient(colors: [Ink.bg1, Ink.bg0], startPoint: .top, endPoint: .bottom) }
             Canvas { ctx, sz in     // faint carbon weave
@@ -982,12 +994,12 @@ final class Backdrop: NSView {
         k = scale
         CATransaction.begin(); CATransaction.setDisableActions(true)
         grad.frame = bounds
-        let base = bounds.height - 296 * k, w = (bounds.width - 32 * k) / CGFloat(bars.count)
+        let base = bounds.height - 296 * k, w = 568 * k / CGFloat(bars.count)      // the skyline stays behind the dials, also in the wide layout
         for (i, b) in bars.enumerated() {
             b.position = CGPoint(x: 16 * k + w * (CGFloat(i) + 0.5), y: base); b.bounds = CGRect(x: 0, y: 0, width: max(2, w - 3 * k), height: b.bounds.height)
         }
         let g = 520 * k
-        glow.frame = CGRect(x: bounds.midX - g / 2, y: bounds.height - 181 * k - g / 2, width: g, height: g)
+        glow.frame = CGRect(x: 300 * k - g / 2, y: bounds.height - 181 * k - g / 2, width: g, height: g)
         under.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 3 * k)
         flashLayer.frame = bounds
         let hw = (568 - 95) / 20.0 * k
@@ -1088,9 +1100,9 @@ final class Grip: NSView {
     override func mouseDown(with e: NSEvent) { let p = spot(e); startX = p.x; startY = p.y; startW = window?.frame.width ?? 600 }
     override func mouseDragged(with e: NSEvent) {
         let p = spot(e), f = window?.frame ?? .zero
-        let viaHeight = (startY - p.y) * (f.height > 0 ? f.width / f.height : 0.75)     // dragging down counts as much as dragging right
-        let dx = p.x - startX
-        onDrag?(startW + (abs(dx) > abs(viaHeight) ? dx : viaHeight))
+        let dx = p.x - startX, down = (startY - p.y) * (f.height > 0 ? min(1, f.width / f.height) : 0.7)
+        // sideways is exact; pulling down adds to it, so a big size is reachable even when the card starts near the screen edge
+        onDrag?(startW + (abs(dx) >= abs(down) ? dx + down * 0.5 : down + dx * 0.5))
     }
     override func draw(_ r: NSRect) {
         NSColor.white.withAlphaComponent(0.35).setStroke()
@@ -1105,7 +1117,7 @@ final class Card: NSPanel { override var canBecomeKey: Bool { true } }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = Model(); var item: NSStatusItem!
-    private var card: Card!; private var host: NSHostingController<Root>!; private var measure: NSHostingController<Panel>!
+    private var card: Card!; private var host: NSHostingController<Root>!; private var measure: NSHostingController<Panel>!; private var measureWide: NSHostingController<Panel>!
     private let backdrop = Backdrop(frame: .zero); private let grip = Grip(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
     private let tap = AudioTap(); private var beat: Timer?
     private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?
@@ -1119,7 +1131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.toolTip = "Redline"
         host = NSHostingController(rootView: Root(m: model, quit: { NSApp.terminate(nil) }))
         host.sizingOptions = []          // sized by hand in fit(): automatic sizing re-laid-out the window on every animation frame
-        measure = NSHostingController(rootView: Panel(m: model))      // never shown; only asked how tall the card wants to be
+        measure = NSHostingController(rootView: Panel(m: model, layout: false))      // never shown; only asked how big each layout wants to be
+        measureWide = NSHostingController(rootView: Panel(m: model, layout: true))
         card = Card(contentRect: NSRect(x: 0, y: 0, width: 600, height: 840), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         card.isOpaque = false; card.backgroundColor = .clear; card.hasShadow = true; card.level = .statusBar
         card.isMovableByWindowBackground = true        // drag it anywhere by its background
@@ -1140,22 +1153,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         src.setEventHandler { [weak self] in self?.toggle() }; src.resume(); sig = src
     }
     private var screenFrame: NSRect { (card.screen ?? item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900) }
-    private func baseSize() -> NSSize { measure.sizeThatFits(in: NSSize(width: 600, height: 10_000)) }
+    private func baseSize(wide: Bool) -> NSSize { (wide ? measureWide : measure).sizeThatFits(in: NSSize(width: 4_000, height: 10_000)) }
     private var rowCount: Int { model.s.usb.count + (model.s.chargerSocket > 0 ? 1 : 0) }
-    /// Dragging the corner: the card keeps its shape and its top-left corner, from 55% up to whatever fits the screen.
-    private func dragTo(width: CGFloat) {
-        let base = baseSize(), vis = screenFrame, old = card.frame
-        let most = max(1, min(2.2, min((old.maxY - vis.minY) / base.height, (vis.maxX - old.minX) / base.width)))
-        let k = min(most, max(0.55, width / base.width))
-        guard abs(k - model.scale) > 0.002 else { return }
-        model.scale = k
+    /// Dragging the corner, like a responsive web page: narrow = the tall single column; once that no longer fits
+    /// the screen and you keep pulling, it reflows into two columns and keeps growing.
+    private func dragTo(width req: CGFloat) {
+        let vis = screenFrame, old = card.frame, availH = old.maxY - vis.minY
+        let tb = baseSize(wide: false), wb = baseSize(wide: true)
+        let tallMax = tb.width * max(1, min(2.2, availH / tb.height))
+        let wideMax = wb.width * min(2.2, min(availH / wb.height, (vis.width - 8) / wb.width))
+        let wideMin = max(900, tallMax)
+        var wide = false, w = min(tallMax, max(tb.width * 0.55, req))
+        if req > tallMax, wideMax >= wideMin, req >= (tallMax + wideMin) / 2 { wide = true; w = min(wideMax, max(wideMin, req)) }
+        let base = wide ? wb : tb, k = w / base.width
+        guard wide != model.wide || abs(k - model.scale) > 0.002 else { return }
+        model.wide = wide; model.scale = k
         let size = NSSize(width: (base.width * k).rounded(), height: (base.height * k).rounded())
-        card.setFrame(NSRect(x: old.minX, y: old.maxY - size.height, width: size.width, height: size.height), display: true)
+        let x = max(vis.minX + 4, min(old.minX, vis.maxX - size.width - 4))       // slides left only if it would leave the screen
+        card.setFrame(NSRect(x: x, y: old.maxY - size.height, width: size.width, height: size.height), display: true)
         backdrop.place(scale: k)
     }
     private func fit(place: Bool) {
         rows = rowCount
-        let base = baseSize(), k = model.scale, size = NSSize(width: base.width * k, height: base.height * k), old = card.frame, vis = screenFrame
+        let base = baseSize(wide: model.wide), k = model.scale, size = NSSize(width: base.width * k, height: base.height * k), old = card.frame, vis = screenFrame
         var origin = NSPoint(x: old.minX, y: old.maxY - size.height)      // keep the top-left corner where it is
         if place, let b = item.button?.window?.frame {
             let v = (item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? vis
@@ -1182,7 +1202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func toggle() { card.isVisible ? close() : open() }
     private func open() {
-        model.scale = 1            // always opens at the standard size
+        model.wide = false; model.scale = 1            // always opens at the standard size and layout
         model.setOpen(true)
         fit(place: true)
         card.makeKeyAndOrderFront(nil)
@@ -1240,6 +1260,8 @@ if args.count >= 3, args[1] == "--render" {
         let m = Model(); m.sampleNow()
         let r = ImageRenderer(content: Panel(m: m, solid: true)); r.scale = 2
         if let img = r.nsImage { writePNG(img, args[2] + "/panel.png", px: Int(img.size.width * 2)) }
+        let rw = ImageRenderer(content: Panel(m: m, solid: true, layout: true)); rw.scale = 2
+        if let img = rw.nsImage { writePNG(img, args[2] + "/panel_wide.png", px: Int(img.size.width * 2)) }
     }
     exit(0)
 }
