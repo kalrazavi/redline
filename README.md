@@ -21,7 +21,7 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 - **Power in**, **System draw** (whole Mac, plus CPU and GPU watts), **Battery**, **Thermals** (temperatures and fan speed)
 - **Network** down and up with Wi-Fi signal and link rate; **Disk** read and write
 - **Records**: all-time highs for CPU temperature, power draw and download speed (click to reset)
-- **USB bay**: every external device with its speed and requested current, the charger, and a small top view of the laptop where the sockets in use glow (green = device, amber = charger). Click a position badge if a socket is shown in the wrong place.
+- **Connected**: every external USB device with its speed and requested current, Bluetooth devices such as AirPods with their battery levels, the charger, and a small top view of the laptop where the sockets in use glow (green = device, amber = charger). Click a position badge if a socket is shown in the wrong place.
 - A red THROTTLED badge when macOS slows the CPU down because of heat
 
 ## Using it
@@ -30,9 +30,9 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 - Drag the card by its background to move it. It has one fixed size.
 - Click anywhere outside the card, or press Esc, to close it.
 - **VIBE**: club lighting behind the dials, driven by whatever the Mac is playing: waves, a glow behind each dial, rings off the big dial on every kick, a strobe, and mirrored sparks that are released on the beat and rise higher when the music lifts. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
-- **Underglow**: four looks, each its own lighting rig. Ice · CDJ (waves, a jog-wheel ring turning at 33 1/3 rpm, a few beams), Nitrous · Laser (a sweeping fan of beams and a strobe), Toxic · Radar (a radar sweep and rings from all three dials), Sunset · Sunrise (a striped sun behind the big dial).
+- **Underglow**: eight looks, each its own lighting rig. Ice · CDJ (waves, a jog-wheel ring turning at 33 1/3 rpm, a few beams), Nitrous · Laser (a sweeping fan of beams and a strobe), Toxic · Radar (a radar sweep and rings from all three dials), Sunset · Sunrise (a striped sun behind the big dial), Vapor · Grid (a neon floor grid rushing towards you under a horizon), Galaxy · Warp (stars streaking outwards and a tunnel of rings), Prism · Spectrum (a rainbow band turning round the big dial), Mono · Scope (the actual sound wave as one mirrored white line on a graticule).
 - **NOS**: switches Coffee Mode (the keep-awake app) on or off. While it is on, the card runs its own red overdrive look with racing edge lights that pulses even in silence. Redline makes no sounds.
-- **Touch Bar**: if Glowstrip is running, it follows these switches. VIBE off = its standard look; VIBE on = the underglow you picked; NOS = the NOS look. The two apps talk only on this Mac (a saved setting and a local notification).
+- **Touch Bar**: if Glowstrip is running, it follows these switches. VIBE off = its standard ice look, standing still; VIBE on = the underglow you picked, moving with the music; NOS = the NOS look. The two apps talk only on this Mac (a saved setting and a local notification).
 
 ## Limits
 

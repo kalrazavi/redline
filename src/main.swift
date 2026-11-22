@@ -70,6 +70,9 @@ struct USBDev: Identifiable, Equatable {
     var id: String; var name: String; var vendor: String; var speed: String; var mA: Int; var depth: Int
     var port = 0      // which of the Mac's USB-C sockets (1-4) this hangs off; 0 = unknown
 }
+struct Wireless: Identifiable, Equatable {
+    var id: String; var name: String; var kind: String; var left: Int?; var right: Int?; var box: Int?; var main: Int?
+}
 struct Snap {
     var cpu = 0.0; var cores: [Double] = Array(repeating: 0, count: ProcessInfo.processInfo.processorCount)
     var gpu = 0.0; var gpuNote = "GPU"
@@ -82,6 +85,7 @@ struct Snap {
     var down = 0.0; var up = 0.0; var rssi: Int?; var txRate: Double?; var txPower: Int?
     var read = 0.0; var write = 0.0; var readTotal = 0.0; var writeTotal = 0.0
     var usb: [USBDev] = []
+    var wireless: [Wireless] = []
     var hog = ""; var hogPct = 0.0
     var uptime: TimeInterval = 0
     var chargerSocket = 0     // which USB-C socket (1-4) the charger is in; 0 = none or unknown
@@ -298,7 +302,31 @@ final class Probe {
             }
         }
         for b in buses { walk((b["_items"] as? [[String: Any]]) ?? [], 0) }
-        return out
+        // A USB 3 hub shows up twice (its slow half and its fast half). Same socket, same box: show it once, at its faster speed.
+        let rank = ["1.5 Mb/s", "12 Mb/s", "480 Mb/s", "5 Gb/s", "10 Gb/s", "20 Gb/s"]
+        var firstHub: [Int: Int] = [:], drop = Set<Int>()
+        for (i, d) in out.enumerated() where d.depth == 0 && d.port > 0 && d.name.localizedCaseInsensitiveContains("hub") {
+            if let f = firstHub[d.port] {
+                if (rank.firstIndex(of: d.speed) ?? 0) > (rank.firstIndex(of: out[f].speed) ?? 0) { out[f].speed = d.speed; out[f].name = d.name }
+                drop.insert(i)
+            } else { firstHub[d.port] = i }
+        }
+        return out.enumerated().filter { !drop.contains($0.offset) }.map { $0.element }
+    }
+
+    /// Connected Bluetooth devices (AirPods, mice, keyboards...) with whatever battery levels they report.
+    static func bluetooth() -> [Wireless] {
+        guard let root = try? JSONSerialization.jsonObject(with: run("/usr/sbin/system_profiler", ["SPBluetoothDataType", "-json"])) as? [String: Any],
+              let first = (root["SPBluetoothDataType"] as? [[String: Any]])?.first, let list = first["device_connected"] as? [[String: Any]] else { return [] }
+        var out: [Wireless] = []
+        for entry in list { for (name, any) in entry {
+            let p = (any as? [String: Any]) ?? [:]
+            func pct(_ k: String) -> Int? { (p[k] as? String).flatMap { Int($0.replacingOccurrences(of: "%", with: "")) } }
+            out.append(Wireless(id: (p["device_address"] as? String) ?? name, name: name.replacingOccurrences(of: " - Find My", with: ""),
+                                kind: (p["device_minorType"] as? String) ?? "Bluetooth", left: pct("device_batteryLevelLeft"), right: pct("device_batteryLevelRight"),
+                                box: pct("device_batteryLevelCase"), main: pct("device_batteryLevelMain")))
+        } }
+        return out.sorted { $0.name < $1.name }
     }
 }
 
@@ -311,7 +339,9 @@ final class Model: ObservableObject {
     @Published var vibeNote = ""
     @Published var nos = false { didSet { if nos != oldValue { Ink.nosOn = nos; announce() } } }   // Coffee Mode is holding the Mac awake
     /// Tells the Touch Bar app (Glowstrip) which look is on. Local to this Mac: a saved setting plus a notification between the two apps.
+    var silent = false      // true while only drawing preview pictures
     func announce() {
+        guard !silent else { return }
         UserDefaults.standard.set(nos, forKey: "nos")
         DistributedNotificationCenter.default().postNotificationName(Notification.Name("local.redline.theme"), object: nil,
                                                                      userInfo: ["glow": Ink.glow, "vibe": vibe, "nos": nos], deliverImmediately: true)
@@ -380,8 +410,8 @@ final class Model: ObservableObject {
             if n % 3 == 0 || n % 10 == 0, !busySlow {      // slower readings, off the fast path
                 busySlow = true; let doUSB = n % 10 == 0
                 DispatchQueue.global(qos: .utility).async {
-                    let h = Probe.hog(); let u = doUSB ? Probe.usb(sockets: self.sockets) : nil
-                    self.q.async { (self.work.hog, self.work.hogPct) = h; if let u = u { self.work.usb = u }; self.busySlow = false }
+                    let h = Probe.hog(); let u = doUSB ? Probe.usb(sockets: self.sockets) : nil, w = doUSB ? Probe.bluetooth() : nil
+                    self.q.async { (self.work.hog, self.work.hogPct) = h; if let u = u { self.work.usb = u }; if let w = w { self.work.wireless = w }; self.busySlow = false }
                 }
             }
             n += 1
@@ -405,7 +435,7 @@ final class Model: ObservableObject {
     /// One real sample, used for the preview picture.
     func sampleNow() {
         probe.full(into: &work); Thread.sleep(forTimeInterval: 1.0); probe.full(into: &work)
-        (work.hog, work.hogPct) = Probe.hog(); work.usb = Probe.usb(sockets: sockets); s = work
+        (work.hog, work.hogPct) = Probe.hog(); work.usb = Probe.usb(sockets: sockets); work.wireless = Probe.bluetooth(); s = work
         peakCPU = min(1, s.cpu + 0.12); peakGPU = s.gpu; peakMem = s.mem
         let w: Double = s.sysW ?? 20
         hSys = (0..<60).map { (i: Int) -> Double in let x: Double = sin(Double(i) / 5); return w * (0.8 + 0.2 * x) }
@@ -420,15 +450,18 @@ enum Ink {
     static let bg0 = Color(red: 0.035, green: 0.043, blue: 0.055), bg1 = Color(red: 0.063, green: 0.075, blue: 0.094)
     static let tile = Color(red: 0.082, green: 0.098, blue: 0.122).opacity(0.90), line = Color.white.opacity(0.07)
     // Four underglows plus NOS. Each has a partner colour it shifts into (the same pairs the Touch Bar uses).
-    static let glows: [Color] = [Color(red: 0.25, green: 0.90, blue: 1.0), Color(red: 0.72, green: 0.45, blue: 1.0),
-                                 Color(red: 0.45, green: 1.0, blue: 0.35), Color(red: 1.0, green: 0.55, blue: 0.15), Color(red: 1.0, green: 0.14, blue: 0.24)]
-    static let partners: [Color] = [Color(red: 1.0, green: 0.18, blue: 0.62), Color(red: 0.20, green: 0.92, blue: 1.0),
-                                    Color(red: 1.0, green: 0.92, blue: 0.10), Color(red: 1.0, green: 0.16, blue: 0.50), Color(red: 0.66, green: 0.30, blue: 1.0)]
-    static let glowNames = ["ICE · CDJ", "NITROUS · LASER", "TOXIC · RADAR", "SUNSET · SUNRISE"]
+    static let glows: [Color] = [Color(red: 0.25, green: 0.90, blue: 1.0), Color(red: 0.72, green: 0.45, blue: 1.0), Color(red: 0.45, green: 1.0, blue: 0.35),
+                                 Color(red: 1.0, green: 0.55, blue: 0.15), Color(red: 1.0, green: 0.36, blue: 0.78), Color(red: 0.40, green: 0.60, blue: 1.0),
+                                 Color(red: 1.0, green: 0.84, blue: 0.22), Color(red: 0.90, green: 0.94, blue: 1.0), Color(red: 1.0, green: 0.14, blue: 0.24)]
+    static let partners: [Color] = [Color(red: 1.0, green: 0.18, blue: 0.62), Color(red: 0.20, green: 0.92, blue: 1.0), Color(red: 1.0, green: 0.92, blue: 0.10),
+                                    Color(red: 1.0, green: 0.16, blue: 0.50), Color(red: 0.25, green: 0.95, blue: 1.0), Color(red: 0.78, green: 0.42, blue: 1.0),
+                                    Color(red: 0.20, green: 0.90, blue: 1.0), Color(red: 0.55, green: 0.75, blue: 1.0), Color(red: 0.66, green: 0.30, blue: 1.0)]
+    static let glowNames = ["ICE · CDJ", "NITROUS · LASER", "TOXIC · RADAR", "SUNSET · SUNRISE", "VAPOR · GRID", "GALAXY · WARP", "PRISM · SPECTRUM", "MONO · SCOPE"]
+    static let blue = Color(red: 0.36, green: 0.62, blue: 1.0)
     static let nos = Color(red: 1.0, green: 0.14, blue: 0.24)
-    static var glow = UserDefaults.standard.integer(forKey: "glow") % 4      // the underglow you picked
+    static var glow = UserDefaults.standard.integer(forKey: "glow") % 8      // the underglow you picked
     static var nosOn = false                                                 // NOS overrides it with its own look
-    static var active: Int { nosOn ? 4 : glow }
+    static var active: Int { nosOn ? 8 : glow }
     static var ice: Color { glows[active] }
     static let amber = Color(red: 1.0, green: 0.72, blue: 0.20)
     static let red = Color(red: 1.0, green: 0.27, blue: 0.23), green = Color(red: 0.35, green: 0.92, blue: 0.60)
@@ -650,14 +683,15 @@ struct Panel: View {
             // USB bay
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    label("USB BAY")
+                    label("CONNECTED")
                     Spacer()
                     let total = s.usb.reduce(0) { $0 + $1.mA }
-                    Text(String(format: "%d DEVICES · %d mA · %.1f W REQUESTED", s.usb.count, total, Double(total) * 5 / 1000)).font(digits(9.5, .medium)).foregroundColor(Ink.dim)
+                    Text(String(format: "%d USB · %d WIRELESS · %d mA · %.1f W REQUESTED", s.usb.count, s.wireless.count, total, Double(total) * 5 / 1000)).font(digits(9.5, .medium)).foregroundColor(Ink.dim)
                 }
                 HStack(alignment: .center, spacing: 10) {
                     PortMap(lit: Set(s.usb.filter { $0.depth == 0 && $0.port > 0 }.map { m.portMap[$0.port - 1] }), charger: s.chargerSocket > 0 ? m.portMap[s.chargerSocket - 1] : nil)
                     VStack(alignment: .leading, spacing: 7) {
+                        let room = 6 - (s.chargerSocket > 0 ? 1 : 0)       // six rows is what fits the screen
                         if s.chargerSocket > 0 {
                             HStack(spacing: 8) {
                                 Circle().fill(Ink.amber).frame(width: 6, height: 6)
@@ -668,14 +702,14 @@ struct Panel: View {
                                     Text(PortMap.names[m.portMap[s.chargerSocket - 1]]).font(.system(size: 8, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.amber)
                                         .frame(width: 92, height: 15).background(Capsule().fill(Ink.amber.opacity(0.10))).contentShape(Rectangle())
                                 }.buttonStyle(.plain).help("Socket \(s.chargerSocket). Wrong place? Click to move it to the next position.")
-                                Text("POWER IN").font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 58, alignment: .trailing)
-                                Text("\(s.adapterW) W").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 48, alignment: .trailing)
+                                Text("POWER IN").font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 62, alignment: .trailing)
+                                Text("\(s.adapterW) W").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 44, alignment: .trailing)
                             }.frame(height: 18)
                         }
-                        if s.usb.isEmpty && s.chargerSocket == 0 {
+                        if s.usb.isEmpty && s.wireless.isEmpty && s.chargerSocket == 0 {
                             Text("Nothing plugged in").font(.system(size: 11, weight: .medium, design: .rounded)).foregroundColor(Ink.dim).frame(maxWidth: .infinity, alignment: .leading).frame(height: 18)
                         }
-                        ForEach(s.usb.prefix(8)) { d in
+                        ForEach(s.usb.prefix(room)) { d in
                             HStack(spacing: 8) {
                                 Circle().fill(Ink.green).frame(width: 6, height: 6).padding(.leading, CGFloat(min(d.depth, 3)) * 12)
                                 Text(d.name).font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
@@ -687,8 +721,21 @@ struct Panel: View {
                                             .frame(width: 92, height: 15).background(Capsule().fill(Ink.green.opacity(0.10))).contentShape(Rectangle())
                                     }.buttonStyle(.plain).help("Socket \(d.port). Wrong place? Click to move it to the next position.")
                                 } else { Color.clear.frame(width: 92, height: 15) }
-                                Text(d.speed).font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 58, alignment: .trailing)
-                                Text("\(d.mA) mA").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 48, alignment: .trailing)
+                                Text(d.speed).font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 62, alignment: .trailing)
+                                Text("\(d.mA) mA").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 44, alignment: .trailing)
+                            }.frame(height: 18)
+                        }
+                        ForEach(s.wireless.prefix(max(0, room - min(room, s.usb.count)))) { d in
+                            HStack(spacing: 8) {
+                                Circle().fill(Ink.blue).frame(width: 6, height: 6)
+                                Text(d.name).font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
+                                Text(d.kind.uppercased()).font(.system(size: 8.5, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
+                                Spacer(minLength: 4)
+                                Text("WIRELESS").font(.system(size: 8, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.blue)
+                                    .frame(width: 92, height: 15).background(Capsule().fill(Ink.blue.opacity(0.12)))
+                                Text(d.left != nil || d.right != nil ? "L \(d.left.map(String.init) ?? "--") · R \(d.right.map(String.init) ?? "--")" : (d.box.map { "CASE \($0)" } ?? ""))
+                                    .font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 62, alignment: .trailing)
+                                Text((d.main ?? (d.left != nil ? d.box : nil)).map { "\($0) %" } ?? ((d.left ?? d.right).map { _ in "" } ?? "--")).font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 44, alignment: .trailing)
                             }.frame(height: 18)
                         }
                     }
@@ -707,7 +754,7 @@ struct Panel: View {
                 Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Coffee Mode: keep the Mac awake, with its own overdrive look") { m.toggleNOS() }
                 HStack(spacing: 6) {
                     label("UNDERGLOW", 8)
-                    ForEach(0..<4, id: \.self) { i in
+                    ForEach(0..<8, id: \.self) { i in
                         Button(action: { Ink.glow = i; UserDefaults.standard.set(i, forKey: "glow"); m.theme = i; m.announce() }) {
                             Circle().fill(Ink.glows[i]).frame(width: 10, height: 10)
                                 .overlay(Circle().strokeBorder(Color.white.opacity(m.theme == i ? 0.95 : 0), lineWidth: 1.5).padding(-2.5))
@@ -798,9 +845,9 @@ struct Panel: View {
             }
     }
     var body: some View {
-        VStack(spacing: 12) { gauges; tiles; recordsRow; usbBay; footer }
+        VStack(spacing: 10) { gauges; tiles; recordsRow; usbBay; footer }
         .id(Ink.active * 2 + (m.nos ? 1 : 0))
-        .padding(16).frame(width: 672)
+        .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12).frame(width: 672)
         .background(ZStack {
             if solid { LinearGradient(colors: [Ink.bg1, Ink.bg0], startPoint: .top, endPoint: .bottom) }
             Canvas { ctx, sz in     // faint carbon weave
@@ -883,6 +930,7 @@ final class AudioTap {
     private var ring = [Float](repeating: 0, count: 1024), fill = 0
     private var levels = [Float](repeating: 0, count: AudioTap.bands), peak: Float = 4
     private var rate = 48_000.0
+    private var shape = [Float](repeating: 0, count: 64), shapePeak: Float = 0.05
     private let fft = vDSP_create_fftsetup(10, FFTRadix(kFFTRadix2))!
     private let window: [Float] = { var w = [Float](repeating: 0, count: 1024); vDSP_hann_window(&w, 1024, Int32(vDSP_HANN_NORM)); return w }()
     var running: Bool { procID != nil }
@@ -955,12 +1003,15 @@ final class AudioTap {
             v *= 1 + Float(b) / 10          // music is quieter up high; lift it so the whole skyline moves
             out[b] = v; top = max(top, v)
         }
+        var biggest: Float = 0; vDSP_maxmgv(ring, 1, &biggest, 1024)
         lock.lock()
+        shapePeak = max(0.03, max(shapePeak * 0.99, biggest)); for i in 0..<64 { shape[i] = ring[i * 16] / shapePeak }      // the raw wave, for the scope look
         peak = max(4, max(peak * 0.997, top))                 // follows the volume, never amplifies silence
         for b in 0..<n { let v = min(1, out[b] / peak); levels[b] = v > levels[b] ? v : levels[b] * 0.80 + v * 0.20 }
         lock.unlock()
     }
     func read() -> [Float] { lock.lock(); defer { lock.unlock() }; return levels }
+    func wave() -> [Float] { lock.lock(); defer { lock.unlock() }; return shape }
 }
 
 // ---------- The backdrop: club lighting in plain Core Animation layers behind the gauges ----------
@@ -969,20 +1020,34 @@ final class AudioTap {
 //   NITROUS · LASER  a wide fan of laser beams that sweeps, with a strobe on the kick
 //   TOXIC · RADAR    a radar sweep turning behind the big dial, rings from all three dials
 //   SUNSET · SUNRISE a striped sun rising behind the big dial, warm waves, slow embers
+//   VAPOR · GRID     a neon floor grid rushing towards you under a glowing horizon
+//   GALAXY · WARP    stars streaking out from behind the big dial, and a tunnel of rings
+//   PRISM · SPECTRUM a full rainbow wheel turning behind the big dial
+//   MONO · SCOPE     white on black: the actual sound wave drawn as one crisp mirrored line on a fine graticule
 //   NOS              everything at once and fast, racing edge lights, pulsing even in silence
 // Everything is symmetric about the centre line and fades out completely in silence.
-struct Look { var wave: [CGFloat]; var beams: Int; var strobe: Float; var jog: Bool; var radar: Bool; var sun: Bool; var sideRings: Bool; var sparks: Float; var aurora: CGFloat; var edge: Bool; var sweep: Double }
+struct Look {
+    var wave: [CGFloat] = [0.22, 0.30, 0.44]; var beams = 0; var strobe: Float = 0; var jog = false; var radar = false; var sun = false
+    var sideRings = false; var sparks: Float = 1; var aurora: CGFloat = 0.5; var edge = false; var sweep = 5.0
+    var grid = false; var warp = false; var prism = false; var scope = false
+}
 final class Backdrop: NSView {
     static let looks: [Look] = [
-        Look(wave: [0.22, 0.30, 0.44], beams: 6, strobe: 0.10, jog: true, radar: false, sun: false, sideRings: false, sparks: 1, aurora: 0.50, edge: false, sweep: 5),
-        Look(wave: [0.10, 0.14, 0.22], beams: 14, strobe: 0.30, jog: false, radar: false, sun: false, sideRings: false, sparks: 0.6, aurora: 0.40, edge: false, sweep: 2.4),
-        Look(wave: [0.00, 0.08, 0.16], beams: 0, strobe: 0.08, jog: false, radar: true, sun: false, sideRings: true, sparks: 0.4, aurora: 0.35, edge: false, sweep: 5),
-        Look(wave: [0.26, 0.36, 0.50], beams: 0, strobe: 0.00, jog: false, radar: false, sun: true, sideRings: false, sparks: 0.5, aurora: 0.60, edge: false, sweep: 5),
-        Look(wave: [0.20, 0.28, 0.42], beams: 14, strobe: 0.42, jog: true, radar: false, sun: false, sideRings: true, sparks: 1.6, aurora: 0.65, edge: true, sweep: 1.1),
+        Look(beams: 6, strobe: 0.10, jog: true),                                                                   // ICE · CDJ
+        Look(wave: [0.10, 0.14, 0.22], beams: 14, strobe: 0.30, sparks: 0.6, aurora: 0.40, sweep: 2.4),            // NITROUS · LASER
+        Look(wave: [0.00, 0.08, 0.16], strobe: 0.08, radar: true, sideRings: true, sparks: 0.4, aurora: 0.35),     // TOXIC · RADAR
+        Look(wave: [0.26, 0.36, 0.50], sun: true, sparks: 0.5, aurora: 0.60),                                      // SUNSET · SUNRISE
+        Look(wave: [0.08, 0.12, 0.22], strobe: 0.06, sparks: 0.9, aurora: 0.55, grid: true),                       // VAPOR · GRID
+        Look(wave: [0.00, 0.00, 0.10], strobe: 0.12, sparks: 0, aurora: 0.45, warp: true),                         // GALAXY · WARP
+        Look(strobe: 0.10, jog: true, sideRings: true, sparks: 1.2, prism: true),                                  // PRISM · SPECTRUM
+        Look(wave: [0, 0, 0], sparks: 0, aurora: 0.12, scope: true),                                               // MONO · SCOPE
+        Look(wave: [0.20, 0.28, 0.42], beams: 14, strobe: 0.42, jog: true, sideRings: true, sparks: 1.6, aurora: 0.65, edge: true, sweep: 1.1),   // NOS
     ]
     private var look: Look { Backdrop.looks[Ink.active] }
     private let grad = CAGradientLayer(), under = CAGradientLayer(), flashLayer = CALayer(), strobe = CAGradientLayer()
     private let waveBox = CALayer(), waveFade = CAGradientLayer(), ringBox = CALayer(), sparks = CAEmitterLayer()
+    private let gridLines = CAShapeLayer(), gridFade = CAGradientLayer(), horizon = CAGradientLayer(), warp = CAEmitterLayer(), tunnel = CALayer(), prism = CAGradientLayer()
+    private let scopeBox = CALayer(), scopeGrid = CAShapeLayer(), scopeGlow = CAShapeLayer(), scopeLine = CAShapeLayer(); private var gridPhase: CGFloat = 0
     private let stage = CALayer(), mirror = CAReplicatorLayer(); private var toneFast: CGFloat = 0.3, toneSlow: CGFloat = 0.3, loudSlow: CGFloat = 0, burst: CGFloat = 0
     private let beamBox = CALayer(), jog = CAShapeLayer(), jogMark = CAShapeLayer(), radar = CAGradientLayer(), sun = CAGradientLayer(), sunStripes = CAShapeLayer()
     private var fills: [CAGradientLayer] = [], masks: [CAShapeLayer] = [], beams: [CAGradientLayer] = [], edges: [CAShapeLayer] = []
@@ -991,7 +1056,7 @@ final class Backdrop: NSView {
     private static let points = 21
     private var heights = Array(repeating: [CGFloat](repeating: 0, count: Backdrop.points), count: 3)
     // card geometry at scale 1, measured from the top-left: the three dials and the line the waves rise from
-    private let cardW: CGFloat = 672, baseline: CGFloat = 296, dials: [(x: CGFloat, y: CGFloat, r: CGFloat)] = [(336, 181, 108), (119, 210, 79), (553, 210, 79)]
+    private let cardW: CGFloat = 672, baseline: CGFloat = 292, dials: [(x: CGFloat, y: CGFloat, r: CGFloat)] = [(336, 177, 108), (119, 206, 79), (553, 206, 79)]
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -1009,6 +1074,28 @@ final class Backdrop: NSView {
             beams.append(b); beamBox.addSublayer(b)
         }
         beamBox.opacity = 0; stage.addSublayer(beamBox)
+        // VAPOR: floor grid and horizon
+        gridLines.fillColor = nil; gridLines.mask = gridFade; gridLines.opacity = 0; stage.addSublayer(gridLines)
+        gridFade.startPoint = CGPoint(x: 0.5, y: 1); gridFade.endPoint = CGPoint(x: 0.5, y: 0)
+        gridFade.colors = [NSColor.white.withAlphaComponent(0.05).cgColor, NSColor.white.cgColor]          // faint at the horizon, bright up close
+        horizon.startPoint = CGPoint(x: 0, y: 0.5); horizon.endPoint = CGPoint(x: 1, y: 0.5); horizon.opacity = 0; stage.addSublayer(horizon)
+        // GALAXY: stars thrown outwards from behind the big dial, and a tunnel of rings that never stops
+        let star = NSImage(size: NSSize(width: 10, height: 10), flipped: false) { r in
+            NSGradient(starting: .white, ending: NSColor.white.withAlphaComponent(0))?.draw(in: NSBezierPath(ovalIn: r), relativeCenterPosition: .zero); return true
+        }
+        let sc = CAEmitterCell(); sc.contents = star.cgImage(forProposedRect: nil, context: nil, hints: nil); sc.name = "star"
+        sc.birthRate = 150; sc.lifetime = 1.5; sc.velocity = 300; sc.velocityRange = 170; sc.emissionRange = 2 * .pi; sc.scale = 0.06; sc.scaleSpeed = 0.34; sc.alphaSpeed = -0.35
+        warp.emitterCells = [sc]; warp.emitterShape = .point; warp.renderMode = .additive; warp.birthRate = 0; stage.addSublayer(warp)
+        tunnel.opacity = 0; stage.addSublayer(tunnel)
+        // PRISM: the whole spectrum as a wheel
+        prism.type = .conic; prism.startPoint = CGPoint(x: 0.5, y: 0.5); prism.endPoint = CGPoint(x: 0.5, y: 0); prism.masksToBounds = true; prism.opacity = 0
+        prism.colors = (0...12).map { NSColor(hue: CGFloat($0 % 12) / 12, saturation: 0.95, brightness: 1, alpha: 0.85).cgColor }
+        stage.addSublayer(prism)
+        // MONO: oscilloscope
+        scopeGrid.fillColor = nil; scopeGrid.strokeColor = NSColor.white.withAlphaComponent(0.07).cgColor; scopeGrid.lineWidth = 1
+        for l in [scopeGlow, scopeLine] { l.fillColor = nil; l.lineJoin = .round; l.lineCap = .round }
+        for l in [scopeGrid, scopeGlow, scopeLine] { scopeBox.addSublayer(l) }
+        scopeBox.opacity = 0; stage.addSublayer(scopeBox)
         stage.masksToBounds = true; layer?.addSublayer(stage)      // sun, radar and beams never spill below the dials
         for i in 0..<5 {
             let g = CAGradientLayer(); g.startPoint = CGPoint(x: 0, y: 0.5); g.endPoint = CGPoint(x: 1, y: 0.5); g.locations = [0, 0.25, 0.5, 0.75, 1]
@@ -1072,6 +1159,33 @@ final class Backdrop: NSView {
         let top = CGRect(x: 0, y: bounds.height - baseline * k, width: bounds.width, height: baseline * k), c = centre(0), r = dials[0].r * k
         waveFade.frame = top
         stage.frame = top; stage.bounds = top          // same coordinates inside as outside
+        // floor grid: from a horizon a third of the way up, down to the baseline
+        gridLines.frame = bounds; gridLines.lineWidth = 1.1 * k
+        let hy = bounds.height - 150 * k
+        gridFade.frame = CGRect(x: 0, y: top.minY, width: bounds.width, height: hy - top.minY)
+        horizon.frame = CGRect(x: 0, y: hy - 1.5 * k, width: bounds.width, height: 3 * k)
+        warp.frame = bounds; warp.emitterPosition = c
+        tunnel.frame = bounds; tunnel.sublayers?.forEach { $0.removeFromSuperlayer() }
+        for i in 0..<5 {
+            let ringL = CAShapeLayer(); ringL.frame = CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
+            ringL.path = CGPath(ellipseIn: ringL.bounds, transform: nil); ringL.fillColor = nil; ringL.lineWidth = 1.6 * k; ringL.opacity = 0; ringL.name = "t"
+            let grow = CABasicAnimation(keyPath: "transform.scale"); grow.fromValue = 1.0; grow.toValue = 3.4
+            let fade = CAKeyframeAnimation(keyPath: "opacity"); fade.values = [0, 0.7, 0]; fade.keyTimes = [0, 0.25, 1]
+            let g = CAAnimationGroup(); g.animations = [grow, fade]; g.duration = 2.5; g.repeatCount = .infinity; g.timeOffset = Double(i) * 0.5
+            g.timingFunction = CAMediaTimingFunction(name: .easeIn)          // accelerates as it comes at you
+            ringL.add(g, forKey: "fly"); tunnel.addSublayer(ringL)
+        }
+        // a rainbow band around the big dial (a ring, not a disc, so it frames the gauge instead of flooding it)
+        let pr = r + 86 * k
+        prism.frame = CGRect(x: c.x - pr, y: c.y - pr, width: 2 * pr, height: 2 * pr); spin(prism, seconds: 9)
+        let band = CGMutablePath(); band.addEllipse(in: prism.bounds); band.addEllipse(in: prism.bounds.insetBy(dx: 62 * k, dy: 62 * k))
+        let hole = CAShapeLayer(); hole.frame = prism.bounds; hole.path = band; hole.fillRule = .evenOdd; prism.mask = hole
+        // oscilloscope graticule: a fine square grid centred on the big dial
+        for l in [scopeBox, scopeGrid, scopeGlow, scopeLine] as [CALayer] { l.frame = bounds }
+        let gp = CGMutablePath(), cell = 42 * k
+        var gx = c.x.truncatingRemainder(dividingBy: cell); while gx < bounds.width { gp.move(to: CGPoint(x: gx, y: top.minY)); gp.addLine(to: CGPoint(x: gx, y: bounds.height)); gx += cell }
+        var gy = c.y - floor((c.y - top.minY) / cell) * cell; while gy < bounds.height { gp.move(to: CGPoint(x: 0, y: gy)); gp.addLine(to: CGPoint(x: bounds.width, y: gy)); gy += cell }
+        scopeGrid.path = gp; scopeLine.lineWidth = 1.8 * k; scopeGlow.lineWidth = 8 * k
         masks[3].lineWidth = 10 * k; masks[4].lineWidth = 1.8 * k
         for (i, g) in glows.enumerated() {
             let size = dials[i].r * 5.2 * k, p = centre(i)
@@ -1119,7 +1233,7 @@ final class Backdrop: NSView {
         under.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 3 * k)
         let hw = (cardW - 32 - 95) / 20.0 * k
         for (i, h) in halos.enumerated() {
-            h.frame = CGRect(x: 16 * k + CGFloat(i) * (hw + 5 * k) - 2 * k, y: bounds.height - 56.5 * k - 6 * k, width: hw + 4 * k, height: 12 * k); h.cornerRadius = 6 * k
+            h.frame = CGRect(x: 16 * k + CGFloat(i) * (hw + 5 * k) - 2 * k, y: bounds.height - 54.5 * k - 6 * k, width: hw + 4 * k, height: 12 * k); h.cornerRadius = 6 * k
         }
         CATransaction.commit()
         recolor(force: true)
@@ -1152,11 +1266,17 @@ final class Backdrop: NSView {
         }
         jog.strokeColor = c.withAlphaComponent(0.85).cgColor; jogMark.strokeColor = white.cgColor
         jog.isHidden = !L.jog; jogMark.isHidden = !L.jog; radar.isHidden = !L.radar; sun.isHidden = !L.sun
-        spin(jog, seconds: Ink.active == 4 ? 0.7 : 1.8); spin(jogMark, seconds: Ink.active == 4 ? 0.7 : 1.8)
+        spin(jog, seconds: Ink.active == 8 ? 0.7 : 1.8); spin(jogMark, seconds: Ink.active == 8 ? 0.7 : 1.8)
         radar.colors = [c.withAlphaComponent(0.70).cgColor, c1.withAlphaComponent(0.22).cgColor, c.withAlphaComponent(0).cgColor, c.withAlphaComponent(0).cgColor]
         radar.locations = [0, 0.16, 0.42, 1]
         sun.colors = [toward(1).blended(withFraction: 0.2, of: white)!.cgColor, c.cgColor, toward(0.6).cgColor]
         edges.forEach { $0.strokeColor = c.blended(withFraction: 0.35, of: white)!.cgColor; $0.isHidden = !L.edge }
+        gridLines.strokeColor = c.cgColor; gridLines.isHidden = !L.grid; horizon.isHidden = !L.grid
+        horizon.colors = [c2.withAlphaComponent(0).cgColor, c2.cgColor, white.cgColor, c2.cgColor, c2.withAlphaComponent(0).cgColor]
+        warp.isHidden = !L.warp; tunnel.isHidden = !L.warp; prism.isHidden = !L.prism; scopeBox.isHidden = !L.scope; waveBox.isHidden = L.scope
+        warp.emitterCells?.first?.color = c.blended(withFraction: 0.6, of: white)?.cgColor
+        tunnel.sublayers?.enumerated().forEach { ($0.element as? CAShapeLayer)?.strokeColor = ($0.offset % 2 == 0 ? c : c2).cgColor }
+        scopeLine.strokeColor = white.cgColor; scopeGlow.strokeColor = c2.withAlphaComponent(0.30).cgColor
         sparks.emitterCells?.first?.color = c.blended(withFraction: 0.45, of: white)?.cgColor
         halos.forEach { $0.backgroundColor = c.withAlphaComponent(0.75).cgColor }
         under.colors = [c2.withAlphaComponent(0).cgColor, c1.cgColor, c.cgColor, c1.cgColor, c2.withAlphaComponent(0).cgColor]
@@ -1186,13 +1306,13 @@ final class Backdrop: NSView {
             let grow = CABasicAnimation(keyPath: "transform.scale"); grow.fromValue = 1.0; grow.toValue = dial == 0 ? 1.9 : 1.6
             let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = alpha; fade.toValue = 0.0
             let thin = CABasicAnimation(keyPath: "lineWidth"); thin.fromValue = width * k; thin.toValue = 0.4 * k
-            let g = CAAnimationGroup(); g.animations = [grow, fade, thin]; g.duration = Ink.active == 4 ? 0.6 : 1.1; g.beginTime = CACurrentMediaTime() + delay
+            let g = CAAnimationGroup(); g.animations = [grow, fade, thin]; g.duration = Ink.active == 8 ? 0.6 : 1.1; g.beginTime = CACurrentMediaTime() + delay
             g.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)        // fast out, long glide
             CATransaction.begin(); CATransaction.setCompletionBlock { l.removeFromSuperlayer() }
             l.add(g, forKey: "ring"); CATransaction.commit()
         }
     }
-    func set(_ levels: [Float]) {
+    func set(_ levels: [Float], wave: [Float] = []) {
         recolor()
         let L = look
         // 11 groups from bass to treble, mirrored so the bass sits in the middle and both edges rest on the baseline
@@ -1235,6 +1355,24 @@ final class Backdrop: NSView {
         let lift = min(1, max(0, 0.45 + (toneFast - toneSlow) * 7 + (loud - loudSlow) * 0.8))
         if hit { burst = 1 } else { burst *= 0.72 }
         CATransaction.begin(); CATransaction.setDisableActions(true)
+        if L.grid {      // the floor rushes towards you, faster when the track is louder; cross-lines spread out as they get close
+            gridPhase = (gridPhase + 0.010 + 0.045 * loud).truncatingRemainder(dividingBy: 1)
+            let hy = bounds.height - 150 * k, base = bounds.height - baseline * k, cx = bounds.midX, p = CGMutablePath()
+            for i in -14...14 { p.move(to: CGPoint(x: cx + CGFloat(i) * 10 * k, y: hy)); p.addLine(to: CGPoint(x: cx + CGFloat(i) * 92 * k, y: base)) }
+            for j in 0..<9 { let t = (CGFloat(j) + gridPhase) / 9, y = hy - (hy - base) * t * t; p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: bounds.width, y: y)) }
+            gridLines.path = p
+        }
+        if L.warp { warp.birthRate = on * Float(min(1.5, 0.25 + loud * 1.2)); warp.velocity = Float(0.5 + 1.6 * loud + 0.5 * beat) }
+        if L.scope {     // the sound wave itself, mirrored about the centre so it is perfectly symmetric
+            let cy = bounds.height - 150 * k, amp = 78 * k, halfW = bounds.width / 2 - 16 * k, n = 32, line = CGMutablePath()
+            var pts: [CGPoint] = []
+            for i in 0..<n { let v = wave.count > i ? CGFloat(wave[i]) : 0, taper = sin(CGFloat(i) / CGFloat(n - 1) * .pi / 2); pts.append(CGPoint(x: 16 * k + halfW * CGFloat(i) / CGFloat(n - 1), y: cy + max(-1, min(1, v)) * amp * taper)) }
+            let all = pts + pts.reversed().map { CGPoint(x: bounds.width - $0.x, y: $0.y) }
+            line.move(to: all[0])
+            for i in 0..<all.count - 1 { let a = all[max(0, i - 1)], b = all[i], d = all[i + 1], e = all[min(all.count - 1, i + 2)]
+                line.addCurve(to: d, control1: CGPoint(x: b.x + (d.x - a.x) / 6, y: b.y + (d.y - a.y) / 6), control2: CGPoint(x: d.x - (e.x - b.x) / 6, y: d.y - (e.y - b.y) / 6)) }
+            scopeLine.path = line; scopeGlow.path = line
+        }
         sparks.birthRate = Float(min(3, 0.18 * high + 2.4 * burst)) * L.sparks * on
         sparks.velocity = Float(0.45 + 1.9 * lift)
         sparks.setValue((lift - 0.38) * 130 * k, forKeyPath: "emitterCells.spark.yAcceleration")
@@ -1252,12 +1390,16 @@ final class Backdrop: NSView {
         radar.opacity = on * Float(min(1, 0.45 + mid * 0.9))
         sun.opacity = on * 0.82; sun.transform = CATransform3DMakeScale(0.94 + 0.14 * bass, 0.94 + 0.14 * bass, 1)
         edges.forEach { $0.opacity = on * Float(0.55 + 0.45 * beat) }
+        gridLines.opacity = on * Float(min(1, 0.55 + bass * 0.6)); horizon.opacity = on * Float(min(1, 0.5 + beat * 0.5))
+        tunnel.opacity = on * Float(min(1, 0.35 + bass * 0.8)); prism.opacity = on * Float(min(0.75, 0.30 + mid * 0.7 + beat * 0.2))
+        scopeBox.opacity = on
         under.opacity = Float(min(1, bass * 1.5))
         for (i, h) in halos.enumerated() { h.opacity = Float(max(0, min(1, beat * 1.9 - abs(CGFloat(i) - 9.5) / 9.5 * 0.7))) }
         CATransaction.commit()
     }
     /// A still frame for the preview pictures.
-    func demo() { for _ in 0..<40 { set((0..<AudioTap.bands).map { Float(0.25 + 0.75 * pow(1 - Double($0) / 48, 1.6)) * Float(0.75 + 0.25 * sin(Double($0) * 0.9)) }) } }
+    func demo() { let w = (0..<64).map { Float(sin(Double($0) * 0.55) * 0.7 + sin(Double($0) * 1.7) * 0.25) }
+        for _ in 0..<40 { set((0..<AudioTap.bands).map { Float(0.25 + 0.75 * pow(1 - Double($0) / 48, 1.6)) * Float(0.75 + 0.25 * sin(Double($0) * 0.9)) }, wave: w) } }
 }
 
 struct Root: View {
@@ -1307,14 +1449,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private var screenFrame: NSRect { (card.screen ?? item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900) }
     private func baseSize() -> NSSize { measure.sizeThatFits(in: NSSize(width: 672, height: 10_000)) }
-    private var rowCount: Int { model.s.usb.count + (model.s.chargerSocket > 0 ? 1 : 0) }
+    private var rowCount: Int { min(6, model.s.usb.count + model.s.wireless.count + (model.s.chargerSocket > 0 ? 1 : 0)) }
     private func fit(place: Bool) {
         rows = rowCount
         let base = baseSize(), k = model.scale, size = NSSize(width: base.width * k, height: base.height * k), old = card.frame, vis = screenFrame
         var origin = NSPoint(x: old.minX, y: old.maxY - size.height)      // keep the top-left corner where it is
         if place, let b = item.button?.window?.frame {
             let v = (item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? vis
-            origin = NSPoint(x: min(max(v.minX + 8, b.midX - size.width / 2), v.maxX - size.width - 8), y: b.minY - size.height - 6)
+            origin = NSPoint(x: min(max(v.minX + 8, b.midX - size.width / 2), v.maxX - size.width - 8), y: b.minY - size.height - 3)
         } else {
             origin.y = max(vis.minY + 4, origin.y)
         }
@@ -1330,10 +1472,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     /// 30 times a second while the card is open: move the lights with the music (VIBE) and/or the NOS overdrive pulse.
     private func pulse() {
-        var levels = [Float](repeating: 0, count: AudioTap.bands)
+        var levels = [Float](repeating: 0, count: AudioTap.bands), wave: [Float] = []
         if model.vibe {
             if !tap.running { let why = tap.start(); if model.vibeNote != (why ?? "") { model.vibeNote = why ?? "" }; if why != nil { model.vibe = false } }
-            levels = tap.read()
+            levels = tap.read(); wave = tap.wave()
         } else if tap.running { tap.stop() }
         if model.nos {      // NOS has its own heartbeat, so it looks urgent even with nothing playing
             let t = CACurrentMediaTime(), kick = Float(pow(max(0, sin(2 * Double.pi * 2.3 * t)), 8))
@@ -1344,7 +1486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard model.vibe || model.nos || lit else { return }
         lit = model.vibe || model.nos
-        backdrop.set(levels)
+        backdrop.set(levels, wave: wave)
     }
     @objc func toggle() { card.isVisible ? close() : open() }
     private func open() {
@@ -1401,12 +1543,12 @@ if args.count >= 3, args[1] == "--render" {
     MainActor.assumeIsolated {
         writePNG(BarIcon.appIcon(), args[2] + "/icon_1024.png", px: 1024)
         writePNG(BarIcon.image(load: 0.35, hot: false, scale: 8, color: .white), args[2] + "/menubar_icon.png", px: 352)
-        let m = Model(); m.sampleNow()
+        let m = Model(); m.silent = true; m.sampleNow()
         let r = ImageRenderer(content: Panel(m: m, solid: true)); r.scale = 2
         if let img = r.nsImage { writePNG(img, args[2] + "/panel.png", px: Int(img.size.width * 2)) }
         // every look, with its lighting frozen mid-song
-        for (i, name) in ["ice", "nitrous", "toxic", "sunset", "nos"].enumerated() {
-            Ink.glow = min(i, 3); Ink.nosOn = i == 4; m.theme = Ink.glow; m.nos = i == 4
+        for (i, name) in ["ice", "nitrous", "toxic", "sunset", "vapor", "galaxy", "prism", "mono", "nos"].enumerated() {
+            Ink.glow = min(i, 7); Ink.nosOn = i == 8; m.theme = Ink.glow; m.nos = i == 8
             let clear = ImageRenderer(content: Panel(m: m)); clear.scale = 2
             guard let top = clear.nsImage else { continue }
             let b = Backdrop(frame: NSRect(origin: .zero, size: top.size)); b.layoutSubtreeIfNeeded(); b.place(scale: 1); b.demo()
