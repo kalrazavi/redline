@@ -365,15 +365,9 @@ final class Model: ObservableObject {
             DispatchQueue.main.async { self.nos = on; if on { self.onNOS?() } }
         }
     }
-    /// Where each socket (1-4) physically sits: 0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right ("top" = by the hinge). Click a badge to correct it.
-    @Published var portMap: [Int] = (UserDefaults.standard.array(forKey: "portMap") as? [Int]).flatMap { $0.count == 4 ? $0 : nil } ?? [1, 0, 2, 3]     // as Ali described his MacBook Pro: sockets 1/2 on the left, 3/4 on the right
-    func cyclePort(_ socket: Int) {
-        guard (1...4).contains(socket) else { return }
-        let next = (portMap[socket - 1] + 1) % 4
-        if let other = portMap.firstIndex(of: next) { portMap[other] = portMap[socket - 1] }
-        portMap[socket - 1] = next
-        UserDefaults.standard.set(portMap, forKey: "portMap")
-    }
+    /// Where each socket (1-4) physically sits on this MacBook Pro. Fixed, not adjustable: 0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right ("top" = by the hinge).
+    /// So: socket 1 bottom-left, socket 2 top-left, socket 3 top-right, socket 4 bottom-right.
+    let portMap = [1, 0, 2, 3]
     @Published var sweep = false          // "ignition": every needle swings to the top once when the panel opens
     @Published var peakCPU = 0.0; @Published var peakGPU = 0.0; @Published var peakMem = 0.0
     @Published var hDown: [Double] = Array(repeating: 0, count: 60); @Published var hUp: [Double] = Array(repeating: 0, count: 60)
@@ -733,10 +727,8 @@ struct Panel: View {
                                 Text("Charger").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
                                 Text(s.adapterName.replacingOccurrences(of: " Power Adapter", with: "").uppercased()).font(.system(size: 8, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
                                 Spacer(minLength: 4)
-                                Button(action: { m.cyclePort(s.chargerSocket) }) {
-                                    Text(PortMap.names[m.portMap[s.chargerSocket - 1]]).font(.system(size: 7.5, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.amber)
-                                        .frame(width: 92, height: 13).background(Capsule().fill(Ink.amber.opacity(0.10))).contentShape(Rectangle())
-                                }.buttonStyle(.plain).help("Socket \(s.chargerSocket). Wrong place? Click to move it to the next position.")
+                                Text(PortMap.names[m.portMap[s.chargerSocket - 1]]).font(.system(size: 7.5, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.amber)
+                                    .frame(width: 92, height: 13).background(Capsule().fill(Ink.amber.opacity(0.10)))
                                 Text("POWER IN").font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 62, alignment: .trailing)
                                 Text("\(s.adapterW) W").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 44, alignment: .trailing)
                             }.frame(height: 15)
@@ -751,10 +743,8 @@ struct Panel: View {
                                 Text(d.vendor.uppercased()).font(.system(size: 8, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
                                 Spacer(minLength: 4)
                                 if d.depth == 0, d.port > 0 {
-                                    Button(action: { m.cyclePort(d.port) }) {
-                                        Text(PortMap.names[m.portMap[d.port - 1]]).font(.system(size: 7.5, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.green)
-                                            .frame(width: 92, height: 13).background(Capsule().fill(Ink.green.opacity(0.10))).contentShape(Rectangle())
-                                    }.buttonStyle(.plain).help("Socket \(d.port). Wrong place? Click to move it to the next position.")
+                                    Text(PortMap.names[m.portMap[d.port - 1]]).font(.system(size: 7.5, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.green)
+                                        .frame(width: 92, height: 13).background(Capsule().fill(Ink.green.opacity(0.10)))
                                 } else { Color.clear.frame(width: 92, height: 13) }
                                 Text(d.speed).font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 62, alignment: .trailing)
                                 Text("\(d.mA) mA").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 44, alignment: .trailing)
