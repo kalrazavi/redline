@@ -29,7 +29,7 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 - Click the needle in the menu bar. Every needle sweeps to the top and settles.
 - Drag the card by its background to move it. It has one fixed size.
 - Click anywhere outside the card, or press Esc, to close it.
-- **VIBE**: a spectrum skyline behind the dials, a bass glow and beat-synced shift-light glow, driven by whatever the Mac is playing. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
+- **VIBE**: behind the dials, three soft mirrored waves (bass in the middle), a glow breathing behind each dial, a ring that leaves the big dial on every kick and a beat glow behind the shift lights, driven by whatever the Mac is playing. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
 - **NOS**: switches Coffee Mode (the keep-awake app) on or off, with a purple flash. Redline makes no sounds.
 - **Underglow**: four accent colours.
 

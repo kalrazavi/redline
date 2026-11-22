@@ -432,7 +432,7 @@ func rate(_ v: Double) -> (String, String) {
     if v < 999_500_000 { return (String(format: "%.1f", v / 1_000_000), "MB/s") }
     return (String(format: "%.2f", v / 1_000_000_000), "GB/s")
 }
-let spring = Animation.timingCurve(0.34, 1.45, 0.64, 1, duration: 0.5)
+let spring = Animation.timingCurve(0.34, 1.45, 0.64, 1, duration: 0.38)
 
 // ---------- A dial ----------
 func dialDeg(_ f: Double) -> Double { 150 + 240 * min(1, max(0, f)) }
@@ -495,8 +495,8 @@ struct Dial: View {
                     Text(big).font(digits(size * 0.15, .bold)).foregroundColor(.white)
                     Text(unit).font(.system(size: size * 0.06, weight: .semibold, design: .rounded)).foregroundColor(Ink.dim)
                 }
-                label(title, max(8.5, size * 0.05))
-                Text(sub).font(digits(max(8, size * 0.043), .medium)).foregroundColor(Ink.dim).padding(.top, 1).lineLimit(1)
+                label(title, max(9, size * 0.05))
+                Text(sub).font(digits(max(8.5, size * 0.043), .medium)).foregroundColor(Ink.dim).padding(.top, 1).lineLimit(1)
             }.offset(y: size * 0.29)
         }
         .frame(width: size, height: size)
@@ -585,11 +585,11 @@ struct Tile<Bottom: View>: View {
                 Text(big).font(digits(22, .bold)).foregroundColor(tint)
                 Text(unit).font(.system(size: 10, weight: .semibold, design: .rounded)).foregroundColor(Ink.dim)
             }.padding(.top, 4)
-            Text(sub).font(digits(9.5, .medium)).foregroundColor(Ink.dim).lineLimit(1).padding(.top, 1)
-            Spacer(minLength: 4)
-            bottom.frame(height: 16)
+            Text(sub).font(digits(10, .medium)).foregroundColor(Ink.dim).lineLimit(1).padding(.top, 2)
+            Spacer(minLength: 3)
+            bottom.frame(height: 15)
         }
-        .padding(10).frame(maxWidth: .infinity, minHeight: 96, maxHeight: 96, alignment: .leading)
+        .padding(.horizontal, 13).padding(.vertical, 10).frame(maxWidth: .infinity, minHeight: 96, maxHeight: 96, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
     }
@@ -623,12 +623,12 @@ struct Panel: View {
                 HStack(spacing: 0) {
                     HStack(spacing: 6) { Image(systemName: "trophy.fill").font(.system(size: 9)).foregroundColor(Ink.amber); label("RECORDS") }
                     Spacer()
-                    ForEach(Array([("HOTTEST", String(format: "%.0f °C", m.records[0])), ("MOST POWER", String(format: "%.1f W", m.records[1])),
-                                   ("FASTEST DOWN", { let r = rate(m.records[2]); return "\(r.0) \(r.1)" }())].enumerated()), id: \.offset) { i, e in
-                        HStack(spacing: 6) { label(e.0, 8.5); Text(e.1).font(digits(11, .bold)).foregroundColor(Ink.amber) }.frame(width: 150, alignment: .trailing)
+                    ForEach(Array([("HOTTEST", String(format: "%.0f °C", m.records[0])), ("PEAK POWER", String(format: "%.1f W", m.records[1])),
+                                   ("TOP DOWNLOAD", { let r = rate(m.records[2]); return "\(r.0) \(r.1)" }())].enumerated()), id: \.offset) { i, e in
+                        HStack(spacing: 7) { label(e.0, 8.5); Text(e.1).font(digits(11, .bold)).foregroundColor(Ink.amber) }.frame(width: 172, alignment: .trailing)
                     }
                 }
-                .padding(.horizontal, 10).frame(height: 30)
+                .padding(.horizontal, 13).frame(height: 30)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
                 .contentShape(Rectangle())
             }.buttonStyle(.plain).help("All-time highs on this Mac. Click to reset.")
@@ -650,7 +650,7 @@ struct Panel: View {
                             HStack(spacing: 8) {
                                 Circle().fill(Ink.amber).frame(width: 6, height: 6)
                                 Text("Charger").font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
-                                Text(s.adapterName.uppercased()).font(.system(size: 8.5, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
+                                Text(s.adapterName.replacingOccurrences(of: " Power Adapter", with: "").uppercased()).font(.system(size: 8.5, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
                                 Spacer(minLength: 4)
                                 Button(action: { m.cyclePort(s.chargerSocket) }) {
                                     Text(PortMap.names[m.portMap[s.chargerSocket - 1]]).font(.system(size: 8, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.amber)
@@ -682,7 +682,7 @@ struct Panel: View {
                     }
                 }
             }
-            .padding(10).background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
+            .padding(.horizontal, 13).padding(.vertical, 10).background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
     }
     @ViewBuilder private var footer: some View {
             // footer
@@ -739,7 +739,7 @@ struct Panel: View {
                 }
             }.drawingGroup()
             // dials
-            HStack(alignment: .bottom, spacing: 14) {
+            HStack(alignment: .bottom, spacing: 30) {
                 Dial(title: "GPU LAST", value: v(s.gpu), peak: m.peakGPU, big: String(format: "%02.0f", s.gpu * 100), unit: "%", sub: s.gpuNote, size: 158)
                 Dial(title: "CPU LAST", value: v(s.cpu), peak: m.peakCPU, big: String(format: "%02.0f", s.cpu * 100), unit: "%",
                      sub: s.cpuW.map { String(format: "%.1f W PACKAGE", $0) } ?? "x10 %", size: 216, numbers: true)
@@ -760,7 +760,7 @@ struct Panel: View {
                 }
                 CoreStrip(cores: s.cores.map { v($0) })
             }
-            .padding(10).background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
+            .padding(.horizontal, 13).padding(.vertical, 10).background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
     }
     @ViewBuilder private var tiles: some View {
         let s = m.s
@@ -788,7 +788,7 @@ struct Panel: View {
     var body: some View {
         VStack(spacing: 12) { gauges; tiles; recordsRow; usbBay; footer }
         .id(m.theme)
-        .padding(16).frame(width: 600)
+        .padding(16).frame(width: 672)
         .background(ZStack {
             if solid { LinearGradient(colors: [Ink.bg1, Ink.bg0], startPoint: .top, endPoint: .bottom) }
             Canvas { ctx, sz in     // faint carbon weave
@@ -952,42 +952,61 @@ final class AudioTap {
 }
 
 // ---------- The backdrop: plain Core Animation layers behind the gauges, so it costs almost nothing ----------
+// With VIBE on it shows three silky, mirrored waves (bass in the middle), a breathing glow behind each dial,
+// and a ring that leaves the big dial on every kick. Everything is symmetric about the centre line.
 final class Backdrop: NSView {
-    private let grad = CAGradientLayer(), glow = CAGradientLayer(), under = CAGradientLayer()
-    private var bars: [CALayer] = []; private var k: CGFloat = 1; private var tint = -1
-    private var halos: [CALayer] = []; private let flashLayer = CALayer(); private var bassAvg: CGFloat = 0, beat: CGFloat = 0
+    private let grad = CAGradientLayer(), under = CAGradientLayer(), flashLayer = CALayer()
+    private let waveBox = CALayer(), waveFade = CAGradientLayer(), crest = CAShapeLayer(), crestGlow = CAShapeLayer(), ringBox = CALayer()
+    private var waves: [CAShapeLayer] = [], glows: [CAGradientLayer] = [], halos: [CALayer] = []
+    private var k: CGFloat = 1, tint = -1, bassAvg: CGFloat = 0, beat: CGFloat = 0, lastRing = 0.0
+    private static let points = 21
+    private var heights = Array(repeating: [CGFloat](repeating: 0, count: Backdrop.points), count: 3)
+    // card geometry at scale 1, measured from the top-left: the three dials and the line the waves rise from
+    private let cardW: CGFloat = 672, baseline: CGFloat = 296, dials: [(x: CGFloat, y: CGFloat, r: CGFloat)] = [(336, 181, 108), (119, 210, 79), (553, 210, 79)]
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         grad.colors = [NSColor(Ink.bg1).cgColor, NSColor(Ink.bg0).cgColor]; grad.startPoint = CGPoint(x: 0.5, y: 1); grad.endPoint = CGPoint(x: 0.5, y: 0)
         layer?.addSublayer(grad)
-        glow.type = .radial; glow.startPoint = CGPoint(x: 0.5, y: 0.5); glow.endPoint = CGPoint(x: 1, y: 1); glow.opacity = 0
-        layer?.addSublayer(glow)
-        for _ in 0..<AudioTap.bands { let b = CALayer(); b.anchorPoint = CGPoint(x: 0.5, y: 0); b.cornerRadius = 1.5; bars.append(b); layer?.addSublayer(b) }
+        for _ in 0..<3 { let w = CAShapeLayer(); w.strokeColor = nil; waves.append(w); waveBox.addSublayer(w) }
+        for l in [crestGlow, crest] { l.fillColor = nil; l.lineJoin = .round; l.lineCap = .round; waveBox.addSublayer(l) }
+        waveFade.colors = [NSColor.white.cgColor, NSColor.white.withAlphaComponent(0.25).cgColor]      // waves soften towards the bottom
+        waveFade.startPoint = CGPoint(x: 0.5, y: 1); waveFade.endPoint = CGPoint(x: 0.5, y: 0)
+        waveBox.mask = waveFade; waveBox.opacity = 0
+        layer?.addSublayer(waveBox)
+        for _ in 0..<3 {
+            let g = CAGradientLayer(); g.type = .radial; g.startPoint = CGPoint(x: 0.5, y: 0.5); g.endPoint = CGPoint(x: 1, y: 1); g.opacity = 0
+            glows.append(g); layer?.addSublayer(g)
+        }
+        layer?.addSublayer(ringBox)
         under.startPoint = CGPoint(x: 0, y: 0.5); under.endPoint = CGPoint(x: 1, y: 0.5); under.opacity = 0
         layer?.addSublayer(under)
         for _ in 0..<20 { let h = CALayer(); h.opacity = 0; halos.append(h); layer?.addSublayer(h) }      // glow behind the shift lights, on the beat
         flashLayer.backgroundColor = NSColor(Ink.nos).cgColor; flashLayer.opacity = 0; layer?.addSublayer(flashLayer)
     }
+    required init?(coder: NSCoder) { fatalError() }
+
     /// NOS: one purple flash across the whole card.
     func flash() {
         let a = CABasicAnimation(keyPath: "opacity"); a.fromValue = 0.6; a.toValue = 0; a.duration = 0.8
         a.timingFunction = CAMediaTimingFunction(name: .easeOut); flashLayer.add(a, forKey: "flash")
     }
-    required init?(coder: NSCoder) { fatalError() }
+    private func centre(_ i: Int) -> CGPoint { CGPoint(x: dials[i].x * k, y: bounds.height - dials[i].y * k) }
+
     func place(scale: CGFloat) {
         k = scale
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        grad.frame = bounds
-        let base = bounds.height - 296 * k, w = 568 * k / CGFloat(bars.count)      // the skyline stays behind the dials, also in the wide layout
-        for (i, b) in bars.enumerated() {
-            b.position = CGPoint(x: 16 * k + w * (CGFloat(i) + 0.5), y: base); b.bounds = CGRect(x: 0, y: 0, width: max(2, w - 3 * k), height: b.bounds.height)
+        for l in [grad, waveBox, ringBox, flashLayer] as [CALayer] { l.frame = bounds }
+        for l in waves + [crest, crestGlow] { l.frame = bounds }
+        waveFade.frame = CGRect(x: 0, y: bounds.height - baseline * k, width: bounds.width, height: baseline * k)
+        crest.lineWidth = 1.5 * k; crestGlow.lineWidth = 7 * k
+        for (i, g) in glows.enumerated() {
+            let size = dials[i].r * 4.6 * k, c = centre(i)
+            g.frame = CGRect(x: c.x - size / 2, y: c.y - size / 2, width: size, height: size)
         }
-        let g = 520 * k
-        glow.frame = CGRect(x: 300 * k - g / 2, y: bounds.height - 181 * k - g / 2, width: g, height: g)
         under.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 3 * k)
-        flashLayer.frame = bounds
-        let hw = (568 - 95) / 20.0 * k
+        let hw = (cardW - 32 - 95) / 20.0 * k
         for (i, h) in halos.enumerated() {
             h.frame = CGRect(x: 16 * k + CGFloat(i) * (hw + 5 * k) - 2 * k, y: bounds.height - 56.5 * k - 6 * k, width: hw + 4 * k, height: 12 * k); h.cornerRadius = 6 * k
         }
@@ -999,26 +1018,73 @@ final class Backdrop: NSView {
         tint = Ink.glow
         let c = NSColor(Ink.ice)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        bars.forEach { $0.backgroundColor = c.withAlphaComponent(0.42).cgColor }
+        for (w, a) in zip(waves, [0.10, 0.14, 0.20] as [CGFloat]) { w.fillColor = c.withAlphaComponent(a).cgColor }     // back, middle, front
+        crest.strokeColor = c.withAlphaComponent(0.95).cgColor; crestGlow.strokeColor = c.withAlphaComponent(0.20).cgColor
+        glows.forEach { $0.colors = [c.withAlphaComponent(0.50).cgColor, c.withAlphaComponent(0).cgColor] }
         halos.forEach { $0.backgroundColor = c.withAlphaComponent(0.55).cgColor }
-        glow.colors = [c.withAlphaComponent(0.55).cgColor, c.withAlphaComponent(0).cgColor]
         under.colors = [c.withAlphaComponent(0).cgColor, c.cgColor, c.withAlphaComponent(0).cgColor]
         CATransaction.commit()
     }
+    /// A smooth curve through evenly spaced heights (Catmull-Rom), optionally closed down to the baseline.
+    private func curve(_ h: [CGFloat], gain: CGFloat, closed: Bool) -> CGPath {
+        let left = 16 * k, step = (cardW - 32) * k / CGFloat(h.count - 1), base = bounds.height - baseline * k, top = 226 * k      // stays below the header
+        let pts = h.enumerated().map { CGPoint(x: left + CGFloat($0.offset) * step, y: base + min(1, $0.element * gain) * top) }
+        let p = CGMutablePath(); p.move(to: pts[0])
+        for i in 0..<pts.count - 1 {
+            let a = pts[max(0, i - 1)], b = pts[i], c = pts[i + 1], d = pts[min(pts.count - 1, i + 2)]
+            p.addCurve(to: c, control1: CGPoint(x: b.x + (c.x - a.x) / 6, y: max(base, b.y + (c.y - a.y) / 6)),
+                       control2: CGPoint(x: c.x - (d.x - b.x) / 6, y: max(base, c.y - (d.y - b.y) / 6)))
+        }
+        if closed { p.closeSubpath() }
+        return p
+    }
+    private func ring() {
+        let c = centre(0), r = dials[0].r * k
+        let l = CAShapeLayer(); l.frame = CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
+        l.path = CGPath(ellipseIn: l.bounds.insetBy(dx: 1, dy: 1), transform: nil)
+        l.fillColor = nil; l.strokeColor = NSColor(Ink.ice).cgColor; l.lineWidth = 2 * k; l.opacity = 0
+        ringBox.addSublayer(l)
+        let grow = CABasicAnimation(keyPath: "transform.scale"); grow.fromValue = 1.0; grow.toValue = 1.85
+        let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 0.55; fade.toValue = 0.0
+        let g = CAAnimationGroup(); g.animations = [grow, fade]; g.duration = 1.0; g.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        CATransaction.begin(); CATransaction.setCompletionBlock { l.removeFromSuperlayer() }
+        l.add(g, forKey: "ring"); CATransaction.commit()
+    }
     func set(_ levels: [Float]) {
         recolor()
-        let maxH = 268 * k
-        let bass = CGFloat(levels.prefix(6).reduce(0, +) / 6)
-        CATransaction.begin(); CATransaction.setAnimationDuration(0.06)
-        for (b, v) in zip(bars, levels) { b.bounds.size.height = max(0, CGFloat(v) * maxH) }
-        glow.opacity = Float(min(1, bass * 1.1)); glow.transform = CATransform3DMakeScale(0.75 + 0.45 * bass, 0.75 + 0.45 * bass, 1)
+        // 11 groups from bass to treble, mirrored so the bass sits in the middle and both edges rest on the baseline
+        let n = Backdrop.points, half = n / 2, per = max(1, levels.count / (half + 1))
+        var group = [CGFloat](repeating: 0, count: half + 1)
+        for g in 0...half { let sl = levels[min(levels.count - 1, g * per)..<min(levels.count, (g + 1) * per)]; group[g] = sl.isEmpty ? 0 : CGFloat(sl.reduce(0, +)) / CGFloat(sl.count) }
+        var target = [CGFloat](repeating: 0, count: n)
+        for j in 0..<n { let g = abs(j - half), edge = CGFloat(g) / CGFloat(half); target[j] = j == 0 || j == n - 1 ? 0 : group[g] * (1 - 0.55 * edge * edge) }
+        let raw = target       // soften neighbours into each other so there is never a spike, only hills
+        for j in 1..<n - 1 { target[j] = raw[j - 1] * 0.25 + raw[j] * 0.5 + raw[j + 1] * 0.25 }
+        let follow: [CGFloat] = [0.10, 0.20, 0.42], gain: [CGFloat] = [1.15, 0.92, 0.68]       // the back wave is tall and lazy, the front one low and quick
+        for i in 0..<3 { for j in 0..<n { heights[i][j] += (target[j] - heights[i][j]) * follow[i] } }
+        let loud = CGFloat(levels.max() ?? 0), bass = CGFloat(levels.prefix(6).reduce(0, +) / 6), mid = CGFloat(levels[14..<34].reduce(0, +) / 20)
+
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        for i in 0..<3 { waves[i].path = curve(heights[i], gain: gain[i], closed: true) }
+        let line = curve(heights[2], gain: gain[2], closed: false); crest.path = line; crestGlow.path = line
+        waveBox.opacity = Float(min(1, max(heights[0].max() ?? 0, loud) * 5))        // fades out completely in silence
+        CATransaction.commit()
+
+        CATransaction.begin(); CATransaction.setAnimationDuration(0.10)
+        for (i, g) in glows.enumerated() {
+            let v = i == 0 ? bass : mid * 1.2, sc = 0.72 + 0.42 * v
+            g.opacity = Float(min(1, v * 1.1)); g.transform = CATransform3DMakeScale(sc, sc, 1)
+        }
         under.opacity = Float(min(1, bass * 1.3))
-        // a kick drum = bass jumping well above its recent average; the glow ripples out from the middle
-        if bass > 0.22, bass > bassAvg * 1.3 { beat = 1 } else { beat *= 0.80 }
+        // a kick drum = bass jumping well above its recent average: a ring leaves the big dial and the shift lights glow from the middle out
+        let now = CACurrentMediaTime()
+        if bass > 0.22, bass > bassAvg * 1.3 { beat = 1; if now - lastRing > 0.24 { lastRing = now; ring() } } else { beat *= 0.80 }
         bassAvg = bassAvg * 0.92 + bass * 0.08
         for (i, h) in halos.enumerated() { h.opacity = Float(max(0, min(1, beat * 1.7 - abs(CGFloat(i) - 9.5) / 9.5 * 0.7))) }
         CATransaction.commit()
     }
+    /// A still frame for the preview picture.
+    func demo() { for _ in 0..<40 { set((0..<AudioTap.bands).map { Float(0.25 + 0.75 * pow(1 - Double($0) / 48, 1.6)) * Float(0.75 + 0.25 * sin(Double($0) * 0.9)) }) } }
 }
 
 struct Root: View {
@@ -1067,7 +1133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         src.setEventHandler { [weak self] in self?.toggle() }; src.resume(); sig = src
     }
     private var screenFrame: NSRect { (card.screen ?? item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900) }
-    private func baseSize() -> NSSize { measure.sizeThatFits(in: NSSize(width: 600, height: 10_000)) }
+    private func baseSize() -> NSSize { measure.sizeThatFits(in: NSSize(width: 672, height: 10_000)) }
     private var rowCount: Int { model.s.usb.count + (model.s.chargerSocket > 0 ? 1 : 0) }
     private func fit(place: Bool) {
         rows = rowCount
@@ -1154,6 +1220,16 @@ if args.count >= 3, args[1] == "--render" {
         let m = Model(); m.sampleNow()
         let r = ImageRenderer(content: Panel(m: m, solid: true)); r.scale = 2
         if let img = r.nsImage { writePNG(img, args[2] + "/panel.png", px: Int(img.size.width * 2)) }
+        // the same card with the music backdrop behind it, frozen mid-song
+        let clear = ImageRenderer(content: Panel(m: m)); clear.scale = 2
+        if let top = clear.nsImage {
+            let b = Backdrop(frame: NSRect(origin: .zero, size: top.size)); b.layoutSubtreeIfNeeded(); b.place(scale: 1); b.demo()
+            let both = NSImage(size: top.size, flipped: false) { rect in
+                guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+                b.layer?.render(in: ctx); top.draw(in: rect); return true
+            }
+            writePNG(both, args[2] + "/panel_vibe.png", px: Int(top.size.width * 2))
+        }
     }
     exit(0)
 }
