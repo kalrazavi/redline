@@ -21,7 +21,7 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 - **Power in**, **System draw** (whole Mac, plus CPU and GPU watts), **Battery**, **Thermals** (temperatures and fan speed)
 - **Network** down and up with Wi-Fi signal and link rate; **Disk** read and write
 - **Records**: all-time highs for CPU temperature, power draw and download speed (click to reset)
-- **Connected**: every external USB device with its speed and requested current, Bluetooth devices such as AirPods with their battery levels, the charger, and a small top view of the laptop where the sockets in use glow (green = device, amber = charger). Click a position badge if a socket is shown in the wrong place.
+- **Connected**: every external USB device with its speed and requested current, Bluetooth devices such as AirPods with their battery levels, the charger, and a small top view of the laptop where the sockets in use glow (green = device, amber = charger).
 - A red THROTTLED badge when macOS slows the CPU down because of heat
 
 ## Using it
