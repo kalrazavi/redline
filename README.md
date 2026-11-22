@@ -32,7 +32,7 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 - **VIBE**: club lighting behind the dials, driven by whatever the Mac is playing: waves, a glow behind each dial, rings off the big dial on every kick, a strobe, and mirrored sparks that are released on the beat and rise higher when the music lifts. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
 - **Underglow**: eight looks, each its own lighting rig. Ice · CDJ (waves, a jog-wheel ring turning at 33 1/3 rpm, a few beams), Nitrous · Laser (a sweeping fan of beams and a strobe), Toxic · Radar (a radar sweep and rings from all three dials), Sunset · Sunrise (a striped sun behind the big dial), Vapor · Grid (a neon floor grid rushing towards you under a horizon), Galaxy · Warp (stars streaking outwards and a tunnel of rings), Prism · Spectrum (a rainbow band turning round the big dial), Mono · Scope (the actual sound wave as one mirrored white line on a graticule).
 - **NOS**: keeps the Mac and its screen awake by itself (no display sleep, no idle or system sleep, no screensaver), holds the fans at maximum, and runs its own red overdrive look with racing edge lights that pulses even in silence. Nothing in System Settings is changed; switching NOS off or quitting Redline drops it all. Closing the lid on battery still sleeps the Mac. If the separate Coffee Mode app is also installed, Redline keeps its switch and running cup in step and follows it when you flip the switch there; neither app needs the other. `kill -USR2 $(pgrep -x Redline)` flips NOS from a script. Redline makes no sounds.
-- **Touch Bar**: if Glowstrip is running, it follows these switches. it always wears the underglow you picked; VIBE off = standing still, VIBE on = moving with the music; NOS = the NOS look. The two apps talk only on this Mac (a saved setting and a local notification).
+- **Touch Bar**: it follows these switches. It always wears the underglow you picked; VIBE off = standing still, VIBE on = moving with the music; NOS = the NOS look. The two parts talk only on this Mac (a saved setting and a local notification).
 
 ## Fans
 
@@ -42,9 +42,15 @@ Changing fan speed needs administrator rights, so that one job is done by a sepa
 
 Redline returns the fans to automatic when it quits, and re-applies your choice after the Mac wakes from sleep. Do not run another fan tool (such as Macs Fan Control) at the same time: the two would fight over the fans.
 
-## Touch Bar is optional
+## Touch Bar
 
-Redline works on any Mac. If the Mac has a Touch Bar and Glowstrip is installed, Redline starts it and the two share one look; if there is no Touch Bar, that part is skipped and nothing else changes. `Install Redline.command` installs Redline, and Glowstrip too when a Touch Bar is found and the Glowstrip folder sits next to this one. While NOS is on, the underglow dots are greyed out and locked; the one you had picked stays faintly marked and returns when NOS goes off.
+The Touch Bar part (it shows up as Glowstrip in Activity Monitor and in the Accessibility list) lives inside Redline.app; there is no second app to install. On a Mac with a Touch Bar, Redline starts it and stops it again when Redline quits, which brings Apple's own bar straight back. On a Mac without a Touch Bar it never starts and nothing else changes. While NOS is on, the underglow dots are greyed out and locked; the one you had picked stays faintly marked and returns when NOS goes off.
+
+- Same controls as Apple's strip: `ESC` · sleep · lock · keyboard light · screen brightness · Night Shift · previous / play-pause / next · volume · mute · show desktop · app controls. Each gauge has a down and an up button (one tap is one notch, holding keeps stepping); a touch alone never jumps the level.
+- The last tile (four squares) steps aside to Apple's bar with the controls of the app in front; the small speedometer in Apple's strip brings the Redline bar back.
+- **Esc needs one switch**: only Apple's own bar can show the real Esc key, so this one presses Esc for you, which macOS allows only with System Settings > Privacy & Security > Accessibility > Glowstrip switched on. Until then, tapping ESC steps aside to Apple's bar. The build only recompiles this part when `src/touchbar.swift` changed, because a recompiled copy counts as a new app and the switch must then be turned off and on again.
+- `defaults write local.redline touchBar -bool false` keeps Apple's bar for good. `touchbar-backup/original 2026-11-22/Restore original Touch Bar.command` does that and restores the button layout as it was before.
+- Handy: `kill -USR1 $(pgrep -x Glowstrip)` flips between the two bars; `screencapture -b file.png` photographs the Touch Bar; pictures of every look are in `preview/touchbar/`.
 
 ## Limits
 
@@ -62,6 +68,6 @@ Everything is read locally from macOS. Redline makes no network connections, has
 ./build.sh
 ```
 
-Needs only the Swift command line tools. It builds `src/main.swift`, writes preview pictures to `preview/`, and installs `/Applications/Redline.app`.
+Needs only the Swift command line tools. It builds `src/main.swift` and the Touch Bar part (`src/touchbar.swift`), writes preview pictures to `preview/`, and installs `/Applications/Redline.app`.
 
 `./build/Redline --probe` prints the raw sensor readings.

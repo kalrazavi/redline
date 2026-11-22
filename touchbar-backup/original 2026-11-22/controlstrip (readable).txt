@@ -1,0 +1,20 @@
+{
+    FullCustomized =     (
+        "com.apple.system.sleep",
+        "com.apple.system.screen-lock",
+        "com.apple.system.group.keyboard-brightness",
+        "com.apple.system.group.brightness",
+        "com.apple.system.night-shift",
+        "com.apple.system.group.media",
+        "com.apple.system.group.volume"
+    );
+    MiniCustomized =     (
+        "com.apple.system.brightness",
+        "com.apple.system.volume",
+        "com.apple.system.mute",
+        "com.apple.system.show-desktop"
+    );
+    "last-analytics-stamp" =     (
+        "817034353.3768719"
+    );
+}

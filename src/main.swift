@@ -1091,14 +1091,19 @@ func macHasTouchBar() -> Bool {
     typealias SizeCall = @convention(c) () -> CGSize
     return unsafeBitCast(sym, to: SizeCall.self)().width > 0
 }
-/// Starts the Touch Bar companion (Glowstrip) if this Mac has a Touch Bar, the companion is installed and it is not already running.
+/// The Touch Bar part (Glowstrip) lives inside Redline.app. Redline starts it on a Mac with a Touch Bar and stops it when Redline quits.
+let touchBarApp = Bundle.main.bundlePath + "/Contents/Helpers/Glowstrip.app"
 func startTouchBarCompanion() {
     DispatchQueue.global(qos: .utility).async {
-        let app = "/Applications/Glowstrip.app"
-        guard macHasTouchBar(), FileManager.default.fileExists(atPath: app) else { return }
-        guard (String(data: Probe.run("/usr/bin/pgrep", ["-x", "Glowstrip"]), encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        _ = Probe.run("/usr/bin/open", ["-g", "-a", app])
+        // `defaults write local.redline touchBar -bool false` keeps Apple's own Touch Bar (the restore script sets this).
+        guard UserDefaults.standard.object(forKey: "touchBar") as? Bool ?? true else { return }
+        guard macHasTouchBar(), FileManager.default.fileExists(atPath: touchBarApp) else { return }
+        guard NSRunningApplication.runningApplications(withBundleIdentifier: "local.glowstrip").isEmpty else { return }
+        _ = Probe.run("/usr/bin/open", ["-g", "-a", touchBarApp])
     }
+}
+func stopTouchBarCompanion() {
+    for a in NSRunningApplication.runningApplications(withBundleIdentifier: "local.glowstrip") { kill(a.processIdentifier, SIGTERM) }
 }
 
 // ---------- App ----------
@@ -1701,7 +1706,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let o = outside { NSEvent.removeMonitor(o); outside = nil }
         if let k = keys { NSEvent.removeMonitor(k); keys = nil }
     }
-    func applicationWillTerminate(_ n: Notification) { tap.stop(); Fans.set(max: false) }      // never leave the fans held when Redline is not there to release them
+    func applicationWillTerminate(_ n: Notification) { tap.stop(); Fans.set(max: false); stopTouchBarCompanion() }      // never leave the fans held when Redline is not there to release them
 }
 
 @MainActor func writePNG(_ img: NSImage, _ path: String, px: Int) {
