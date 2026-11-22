@@ -17,10 +17,13 @@ typedef struct { UInt32 dataSize; UInt32 dataType; char dataAttributes; } info_t
 typedef struct { UInt32 key; vers_t vers; plimit_t pLimitData; info_t keyInfo; char result, status, data8; UInt32 data32; unsigned char bytes[32]; } smc_t;
 
 static io_connect_t conn;
+static int lastKr = 0, lastResult = 0;      // how the chip answered the most recent request, for honest error messages
+#define VERSION 2
 static UInt32 code(const char *s) { return ((UInt32)s[0] << 24) | ((UInt32)s[1] << 16) | ((UInt32)s[2] << 8) | (UInt32)s[3]; }
 static int call(smc_t *in, smc_t *out) {
     size_t n = sizeof(smc_t); memset(out, 0, sizeof(smc_t));
-    return IOConnectCallStructMethod(conn, 2, in, sizeof(smc_t), out, &n) == kIOReturnSuccess && out->result == 0;
+    lastKr = IOConnectCallStructMethod(conn, 2, in, sizeof(smc_t), out, &n); lastResult = (unsigned char)out->result;
+    return lastKr == kIOReturnSuccess && out->result == 0;
 }
 static int info(const char *key, info_t *ki) {
     smc_t in, out; memset(&in, 0, sizeof in); in.key = code(key); in.data8 = 9;
@@ -60,11 +63,13 @@ static int writeNumber(const char *key, double v) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "version")) { printf("%d\n", VERSION); return 0; }
     if (argc != 2 || (strcmp(argv[1], "status") && strcmp(argv[1], "max") && strcmp(argv[1], "auto"))) { fprintf(stderr, "usage: redline-fan status|max|auto\n"); return 2; }
     int want = !strcmp(argv[1], "max") ? 1 : (!strcmp(argv[1], "auto") ? 0 : -1);
     io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"));
     if (!svc || IOServiceOpen(svc, mach_task_self(), 0, &conn) != kIOReturnSuccess) { fprintf(stderr, "cannot reach the sensor chip\n"); return 1; }
     double count = 0; if (!readNumber("FNum", &count) || count < 1 || count > 6) { fprintf(stderr, "no fans found\n"); return 1; }
+    if (want >= 0 && geteuid() == 0) { setgid(0); setuid(0); }      // act fully as the system, not half as the user
     if (want >= 0 && geteuid() != 0) { fprintf(stderr, "needs administrator rights: run 'Enable fan control' once\n"); return 3; }
     int ok = 1;
     for (int i = 0; i < (int)count; i++) {
@@ -73,10 +78,15 @@ int main(int argc, char **argv) {
         if (!readNumber(mx, &top) || top < 1000 || top > 12000) { fprintf(stderr, "fan %d: no rated maximum, left alone\n", i); ok = 0; continue; }
         if (want == 1) {
             // The target is the fan's own rated maximum as reported by the Mac (never a number made up here, never above it).
-            // If the target does not stick, the fan is handed straight back to macOS rather than left in an unknown state.
-            double set = 0;
-            if (!(writeNumber(md, 1) && writeNumber(tg, top)) || !readNumber(tg, &set) || set > top + 1 || set < top - 50) {
-                writeNumber(md, 0); fprintf(stderr, "fan %d: could not set maximum, returned to automatic\n", i); ok = 0;
+            int okMode = writeNumber(md, 1), krM = lastKr, rsM = lastResult;
+            int okTarget = writeNumber(tg, top), krT = lastKr, rsT = lastResult;
+            // The chip takes a moment to accept a new target, so look again for up to two seconds before judging.
+            double set = 0, m = 0; int good = 0;
+            for (int t = 0; t < 14 && !good; t++) { usleep(150000); readNumber(tg, &set); readNumber(md, &m); good = m > 0 && set <= top + 1 && set >= top - 60; }
+            if (!good) {      // never leave a fan held at a speed nobody chose: hand it straight back to macOS
+                writeNumber(md, 0); ok = 0;
+                fprintf(stderr, "fan %d: maximum not accepted, returned to automatic (mode write %d kr=%x r=%02x, target write %d kr=%x r=%02x, read back mode %.0f target %.0f of %.0f)\n",
+                        i, okMode, krM, rsM, okTarget, krT, rsT, m, set, top);
             }
         }
         if (want == 0) { if (!writeNumber(md, 0)) { fprintf(stderr, "fan %d: could not return to automatic\n", i); ok = 0; } }

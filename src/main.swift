@@ -88,6 +88,7 @@ struct Snap {
     var wireless: [Wireless] = []
     var hog = ""; var hogPct = 0.0
     var uptime: TimeInterval = 0
+    var fanTops: [Double] = []
     var fanForced = false     // the sensor chip says the fans are held at a fixed speed
     var chargerSocket = 0     // which USB-C socket (1-4) the charger is in; 0 = none or unknown
 }
@@ -207,6 +208,7 @@ final class Probe {
         let nf = Int(smc.read("FNum") ?? 0)
         s.fans = (0..<min(nf, 4)).compactMap { smc.read("F\($0)Ac") }
         s.fanForced = (smc.read("F0Md") ?? 0) > 0
+        if s.fanTops.count != s.fans.count { s.fanTops = (0..<s.fans.count).map { smc.read("F\($0)Mx") ?? 6000 } }
         if let mx = smc.read("F0Mx"), mx > 1000 { s.fanMax = mx }
         var st: Unmanaged<CFDictionary>?
         if IOPMCopyCPUPowerStatus(&st) == kIOReturnSuccess, let d = st?.takeRetainedValue() as? [String: Any] {
@@ -343,7 +345,18 @@ enum Fans {
         guard let a = try? FileManager.default.attributesOfItem(atPath: helper) else { return false }
         return (a[.ownerAccountID] as? NSNumber)?.intValue == 0 && ((a[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o4000 != 0
     }
-    static func set(max: Bool) { guard ready else { return }; _ = Probe.run(helper, [max ? "max" : "auto"]) }
+    static let version = "2"       // must match VERSION in src/fan.c; an older installed helper is asked to be updated
+    /// True when the installed helper is this version.
+    static var current: Bool { ready && (String(data: Probe.run(helper, ["version"]), encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == version }
+    /// Returns what the helper said when it could not do it (empty = fine).
+    @discardableResult static func set(max: Bool) -> String {
+        guard ready else { return "" }
+        let p = Process(); p.executableURL = URL(fileURLWithPath: helper); p.arguments = [max ? "max" : "auto"]
+        let err = Pipe(); p.standardError = err; p.standardOutput = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return "could not start the helper" }
+        let d = err.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        return (String(data: d, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 // ---------- The model the panel watches ----------
@@ -355,12 +368,22 @@ final class Model: ObservableObject {
     @Published var vibeNote = ""
     @Published var fanMax = UserDefaults.standard.bool(forKey: "fanMax")      // your own choice: false = automatic, true = maximum
     @Published var fanReady = Fans.ready
+    @Published var fanStale = false          // an older helper is installed and needs the set-up run once more
+    @Published var fanNote = ""              // what the helper said if it could not do it
     /// NOS always means maximum; otherwise it is your choice.
     var fansWanted: Bool { nos || fanMax }
     private var fanApplied = Date.distantPast
     func applyFans() {
         fanApplied = Date(); let want = fansWanted
-        DispatchQueue.global(qos: .userInitiated).async { let ok = Fans.ready; if ok { Fans.set(max: want) }; DispatchQueue.main.async { if self.fanReady != ok { self.fanReady = ok } } }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = Fans.ready, fresh = ok && Fans.current
+            let said = fresh ? Fans.set(max: want) : ""
+            DispatchQueue.main.async {
+                if self.fanReady != ok { self.fanReady = ok }; if self.fanStale != (ok && !fresh) { self.fanStale = ok && !fresh }
+                if self.fanNote != said { self.fanNote = said }
+                if !said.isEmpty { try? (said + "\n").write(toFile: NSHomeDirectory() + "/Library/Logs/Redline-fans.log", atomically: true, encoding: .utf8) }
+            }
+        }
     }
     @Published var nos = false { didSet { if nos != oldValue { Ink.nosOn = nos; announce(); applyFans() } } }   // Coffee Mode is holding the Mac awake
     /// Tells the Touch Bar app (Glowstrip) which look is on. Local to this Mac: a saved setting plus a notification between the two apps.
@@ -439,7 +462,7 @@ final class Model: ObservableObject {
         DispatchQueue.main.async {
             self.onTick?(snap.cpu)
             // macOS takes the fans back after sleep; if what the Mac is doing no longer matches what is wanted, set it again
-            if snap.fanForced != self.fansWanted, -self.fanApplied.timeIntervalSinceNow > 6 { self.applyFans() }
+            if self.fanReady, !self.fanStale, snap.fanForced != self.fansWanted, -self.fanApplied.timeIntervalSinceNow > (self.fanNote.isEmpty ? 6 : 60) { self.applyFans() }
             var r = self.rec
             r[0] = max(r[0], snap.cpuTemp ?? 0); r[1] = max(r[1], snap.sysW ?? 0); if isOpen, settled { r[2] = max(r[2], snap.down) }
             if r != self.rec { self.rec = r; UserDefaults.standard.set(r, forKey: "records") }
@@ -802,18 +825,22 @@ struct Panel: View {
                     do { if loginOn { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() } } catch {}
                     loginOn = SMAppService.mainApp.status == .enabled
                 }
-                Pill(text: "VIBE", on: m.vibe, tip: m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
+                Pill(text: "VIBE", on: m.vibe || m.nos, tip: m.nos ? "NOS has taken over the lights. Your VIBE setting comes back when NOS goes off." : m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
+                    .disabled(m.nos).opacity(m.nos ? 0.55 : 1)       // NOS is an override: shown as on, dimmed, not clickable
                 Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Coffee Mode: keep the Mac awake, with its own overdrive look") { m.toggleNOS() }
                 HStack(spacing: 6) {
                     label("FANS", 8).fixedSize()
-                    Pill(text: !m.fanReady ? "SET UP" : (m.fansWanted ? "MAX" : "AUTO"), on: m.fanReady && m.fansWanted, tint: Ink.amber,
+                    let setUp = !m.fanReady || m.fanStale, held = m.s.fanForced
+                    Pill(text: !m.fanReady ? "SET UP" : (m.fanStale ? "UPDATE" : (m.fansWanted ? "MAX" : "AUTO")), on: !setUp && m.fansWanted && held, tint: Ink.amber,
                          tip: !m.fanReady ? "Fan control needs a one-time set-up with your Mac password. Click to start it."
-                              : (m.nos ? "Held at maximum while NOS is on" : (m.fanMax ? "Both fans at their rated maximum. Click for automatic." : "macOS controls the fans. Click for maximum."))) {
-                        if !m.fanReady {
-                            if Fans.ready { m.applyFans() }
+                              : m.fanStale ? "The fan helper was improved. Click to install the new one (asks for your Mac password once more)."
+                              : !m.fanNote.isEmpty ? "The Mac did not accept it: \(m.fanNote)"
+                              : (m.nos ? "Held at maximum while NOS is on" : (m.fanMax ? "Both fans at their rated maximum (\(m.s.fanTops.map { String(format: "%.0f", $0) }.joined(separator: " and ")) rpm). Click for automatic." : "macOS controls the fans. Click for maximum."))) {
+                        if setUp {
+                            if Fans.current { m.applyFans() }
                             else if let r = Bundle.main.resourcePath { NSWorkspace.shared.open(URL(fileURLWithPath: r + "/Enable fan control.command")) }
                         } else { m.fanMax.toggle(); UserDefaults.standard.set(m.fanMax, forKey: "fanMax"); m.applyFans() }
-                    }.disabled(m.nos && m.fanReady).opacity(m.nos && m.fanReady ? 0.55 : 1)
+                    }.disabled(m.nos && !setUp).opacity(m.nos && !setUp ? 0.55 : 1)
                 }.padding(.leading, 6)
                 HStack(spacing: 5) {
                     label("GLOW", 8).fixedSize().opacity(m.nos ? 0.45 : 1)
@@ -896,9 +923,24 @@ struct Panel: View {
                      sub: String(format: "%@%.1f W · %.0f%% HEALTH", s.battW >= 0 ? "+" : "−", abs(s.battW), s.health * 100),
                      tint: s.battPct <= 15 ? Ink.red : .white) { Bar(value: v(Double(s.battPct) / 100), color: s.battPct <= 15 ? Ink.red : Ink.green) }
                     .help(String(format: "%d charge cycles · battery %.0f °C", s.cycles, s.battTemp))
-                Tile(title: "THERMALS", big: s.cpuTemp.map { String(format: "%.0f", $0) } ?? "--", unit: "°C",
-                     sub: "GPU \(s.gpuTemp.map { String(format: "%.0f°", $0) } ?? "--") · \(s.fans.isEmpty ? "--" : String(format: "%.0f", s.fans.max() ?? 0)) RPM",
-                     tint: (s.cpuTemp ?? 0) >= 90 ? Ink.red : .white) { Bar(value: v(((s.cpuTemp ?? 30) - 30) / 70), color: (s.cpuTemp ?? 0) >= 90 ? Ink.red : Ink.ice) }
+                Tile(title: s.fanForced ? "THERMALS · FANS MAX" : "THERMALS", big: s.cpuTemp.map { String(format: "%.0f", $0) } ?? "--", unit: "°C",
+                     sub: "GPU \(s.gpuTemp.map { String(format: "%.0f°", $0) } ?? "--") · LIMIT \(s.speedLimit)%",
+                     tint: (s.cpuTemp ?? 0) >= 90 ? Ink.red : .white) {
+                    // one small gauge per fan: its speed now, as a share of that fan's own rated maximum
+                    HStack(spacing: 10) {
+                        ForEach(Array(s.fans.prefix(2).enumerated()), id: \.offset) { i, rpm in
+                            let top = s.fanTops.count > i ? s.fanTops[i] : s.fanMax
+                            VStack(spacing: 2) {
+                                HStack(spacing: 0) {
+                                    Text(i == 0 ? "L" : "R").font(.system(size: 7.5, weight: .heavy, design: .rounded)).foregroundColor(Ink.dim)
+                                    Spacer(minLength: 2)
+                                    Text(String(format: "%.0f", rpm)).font(digits(8.5, .bold)).foregroundColor(s.fanForced ? Ink.amber : Ink.mid)
+                                }
+                                Bar(value: v(rpm / max(1, top)), color: s.fanForced ? Ink.amber : Ink.ice).frame(height: 4)
+                            }.help(String(format: "%@ fan: %.0f of %.0f rpm", i == 0 ? "Left" : "Right", rpm, top))
+                        }
+                    }
+                }
             }
             HStack(spacing: 10) {
                 let d = rate(s.down), u = rate(s.up), r = rate(s.read), wr = rate(s.write)
