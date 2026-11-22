@@ -458,6 +458,17 @@ enum Ink {
                                     Color(red: 0.20, green: 0.90, blue: 1.0), Color(red: 0.55, green: 0.75, blue: 1.0), Color(red: 0.66, green: 0.30, blue: 1.0)]
     static let glowNames = ["ICE · CDJ", "NITROUS · LASER", "TOXIC · RADAR", "SUNSET · SUNRISE", "VAPOR · GRID", "GALAXY · WARP", "PRISM · SPECTRUM", "MONO · SCOPE"]
     static let blue = Color(red: 0.36, green: 0.62, blue: 1.0)
+    // Each look also has its own bodywork: the glass the boxes are made of, their edge, and the shape of the little lights.
+    static let glass: [Color] = [tile, Color(red: 0.110, green: 0.080, blue: 0.165).opacity(0.90), Color(red: 0.075, green: 0.110, blue: 0.075).opacity(0.90),
+                                 Color(red: 0.150, green: 0.090, blue: 0.090).opacity(0.90), Color(red: 0.105, green: 0.075, blue: 0.175).opacity(0.90),
+                                 Color(red: 0.055, green: 0.075, blue: 0.160).opacity(0.90), Color(red: 0.095, green: 0.095, blue: 0.105).opacity(0.90),
+                                 Color(red: 0.015, green: 0.015, blue: 0.020).opacity(0.92), Color(red: 0.170, green: 0.045, blue: 0.065).opacity(0.90)]
+    static var tileFill: Color { glass[active] }
+    static var tileLine: Color { active == 0 ? line : (active == 7 ? Color.white.opacity(0.38) : ice.opacity(active == 8 ? 0.50 : 0.22)) }
+    /// How round the little lights are (core LEDs and shift lights): 0 = square, 9 = fully round.
+    static var ledRadius: CGFloat { [1.5, 0, 0.5, 9, 0, 9, 1.5, 0, 0][active] }
+    /// How far the little lights lean forward, as a shear (NOS leans hard).
+    static var ledLean: CGFloat { [0, -0.35, 0, 0, 0, 0, 0, 0, -0.7][active] }
     static let nos = Color(red: 1.0, green: 0.14, blue: 0.24)
     static var glow = UserDefaults.standard.integer(forKey: "glow") % 8      // the underglow you picked
     static var nosOn = false                                                 // NOS overrides it with its own look
@@ -488,7 +499,7 @@ struct DialFace: View, Equatable {
         let r = size / 2
         ZStack {
             Circle().fill(RadialGradient(colors: [Ink.bg1, Ink.bg0], center: .center, startRadius: 0, endRadius: r))
-            Circle().strokeBorder(LinearGradient(colors: hot ? [Ink.red, Ink.red.opacity(0.25)] : [Color.white.opacity(0.16), Color.white.opacity(0.02)], startPoint: .top, endPoint: .bottom), lineWidth: hot ? 2.5 : 1.5)
+            Circle().strokeBorder(LinearGradient(colors: hot ? [Ink.red, Ink.red.opacity(0.25)] : (theme == 0 ? [Color.white.opacity(0.16), Color.white.opacity(0.02)] : (theme == 7 ? [Color.white.opacity(0.75), Color.white.opacity(0.25)] : [Ink.ice.opacity(0.70), Ink.ice.opacity(0.08)])), startPoint: .top, endPoint: .bottom), lineWidth: hot ? 2.5 : (theme == 0 ? 1.5 : 2))
             Canvas { ctx, sz in
                 let c = CGPoint(x: sz.width / 2, y: sz.height / 2), rr = sz.width / 2 - 9
                 for i in 0...50 {
@@ -517,7 +528,7 @@ struct Dial: View {
         let hot = value >= redFrom, col = hot ? Ink.red : Ink.ice
         let frac = 240.0 / 360.0 * min(1, max(0, value))
         ZStack {
-            DialFace(size: size, numbers: numbers, redFrom: redFrom, hot: hot, theme: Ink.glow).equatable()
+            DialFace(size: size, numbers: numbers, redFrom: redFrom, hot: hot, theme: Ink.active).equatable()
             // lit arc: a soft wide stroke under a sharp one gives the glow without a costly blur
             Circle().trim(from: 0, to: frac).stroke(col.opacity(0.22), style: StrokeStyle(lineWidth: size * 0.06, lineCap: .round))
                 .rotationEffect(.degrees(150)).padding(size * 0.135)
@@ -559,8 +570,8 @@ struct CoreStrip: View {
                     VStack(spacing: 2) {
                         ForEach((0..<segs).reversed(), id: \.self) { k in
                             let on = v * Double(segs) > Double(k) + 0.15
-                            RoundedRectangle(cornerRadius: 1.5).fill(k >= segs - 2 ? Ink.red : (k >= segs - 4 ? Ink.amber : Ink.ice))
-                                .opacity(on ? 1 : 0.10)
+                            RoundedRectangle(cornerRadius: Ink.ledRadius).fill(k >= segs - 2 ? Ink.red : (k >= segs - 4 ? Ink.amber : Ink.ice))
+                                .opacity(on ? 1 : 0.10).transformEffect(CGAffineTransform(a: 1, b: 0, c: Ink.ledLean, d: 1, tx: 0, ty: 0))
                                 .frame(height: 4)
                         }
                     }
@@ -608,6 +619,30 @@ struct PortMap: View {
     }
 }
 
+/// The outline of every box on the card. Each look has its own:
+/// ice rounded · nitrous all corners cut · toxic two opposite corners cut · sunset very round · vapor crisp · galaxy soft · prism rounded · mono square · NOS the other two corners cut
+struct TileShape: Shape {
+    func path(in r: CGRect) -> Path {
+        func cut(_ tl: CGFloat, _ tr: CGFloat, _ br: CGFloat, _ bl: CGFloat) -> Path {
+            var p = Path()
+            p.move(to: CGPoint(x: r.minX + tl, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX - tr, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY + tr))
+            p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - br)); p.addLine(to: CGPoint(x: r.maxX - br, y: r.maxY)); p.addLine(to: CGPoint(x: r.minX + bl, y: r.maxY))
+            p.addLine(to: CGPoint(x: r.minX, y: r.maxY - bl)); p.addLine(to: CGPoint(x: r.minX, y: r.minY + tl)); p.closeSubpath(); return p
+        }
+        let most = min(r.width, r.height) / 2
+        switch Ink.active {
+        case 1: return cut(min(9, most), min(9, most), min(9, most), min(9, most))
+        case 2: return cut(min(14, most), 2, min(14, most), 2)
+        case 3: return Path(roundedRect: r, cornerRadius: min(20, most))
+        case 4: return Path(roundedRect: r, cornerRadius: 3)
+        case 5: return Path(roundedRect: r, cornerRadius: min(15, most))
+        case 7: return Path(r)
+        case 8: return cut(2, min(14, most), 2, min(14, most))
+        default: return Path(roundedRect: r, cornerRadius: 10)
+        }
+    }
+}
+
 /// A small on/off pill for the footer.
 struct Pill: View {
     var text: String; var on: Bool; var tint: Color = Ink.ice; var tip: String; var action: () -> Void
@@ -635,8 +670,8 @@ struct Tile<Bottom: View>: View {
             bottom.frame(height: 15)
         }
         .padding(.horizontal, 13).padding(.vertical, 10).frame(maxWidth: .infinity, minHeight: 96, maxHeight: 96, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
+        .background(TileShape().fill(Ink.tileFill))
+        .overlay(TileShape().stroke(Ink.tileLine, lineWidth: 1))
     }
 }
 struct Bar: View {
@@ -674,7 +709,7 @@ struct Panel: View {
                     }
                 }
                 .padding(.horizontal, 13).frame(height: 30)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
+                .background(TileShape().fill(Ink.tileFill)).overlay(TileShape().stroke(Ink.tileLine, lineWidth: 1))
                 .contentShape(Rectangle())
             }.buttonStyle(.plain).help("All-time highs on this Mac. Click to reset.")
     }
@@ -741,7 +776,7 @@ struct Panel: View {
                     }
                 }
             }
-            .padding(.horizontal, 13).padding(.vertical, 10).background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
+            .padding(.horizontal, 13).padding(.vertical, 10).background(TileShape().fill(Ink.tileFill)).overlay(TileShape().stroke(Ink.tileLine, lineWidth: 1))
     }
     @ViewBuilder private var footer: some View {
             // footer
@@ -793,8 +828,8 @@ struct Panel: View {
             // shift lights
             HStack(spacing: 5) {
                 ForEach(0..<20, id: \.self) { i in
-                    Capsule().fill(i >= 16 ? Ink.red : (i >= 11 ? Ink.amber : Ink.green))
-                        .opacity(v(s.cpu) * 20 > Double(i) + 0.3 ? 1 : 0.12).frame(height: 5)
+                    RoundedRectangle(cornerRadius: min(2.5, Ink.ledRadius * 2)).fill(i >= 16 ? Ink.red : (i >= 11 ? Ink.amber : Ink.green))
+                        .opacity(v(s.cpu) * 20 > Double(i) + 0.3 ? 1 : 0.12).frame(height: 5).transformEffect(CGAffineTransform(a: 1, b: 0, c: Ink.ledLean * 2, d: 1, tx: 0, ty: 0))
                 }
             }.drawingGroup()
             // dials
@@ -819,7 +854,7 @@ struct Panel: View {
                 }
                 CoreStrip(cores: s.cores.map { v($0) })
             }
-            .padding(.horizontal, 13).padding(.vertical, 10).background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
+            .padding(.horizontal, 13).padding(.vertical, 10).background(TileShape().fill(Ink.tileFill)).overlay(TileShape().stroke(Ink.tileLine, lineWidth: 1))
     }
     @ViewBuilder private var tiles: some View {
         let s = m.s
