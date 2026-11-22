@@ -335,6 +335,36 @@ final class Probe {
     }
 }
 
+// ---------- NOS keeps the Mac awake (the same job the Coffee Mode app does, built in) ----------
+// Nothing in System Settings is changed. While NOS is on, Redline holds "stay awake" requests with macOS:
+// no display sleep, no idle sleep, no system sleep, no disk spin-down, and a "someone is here" nudge every 30 seconds
+// so the screen never dims and the screensaver never starts. Switching NOS off, quitting or a crash drops them all.
+// As with Coffee Mode, closing the lid on battery still puts the Mac to sleep.
+final class Awake {
+    private var ids: [IOPMAssertionID] = []
+    private var activity = IOPMAssertionID(0)
+    private var poke: Timer?
+    func on() {
+        guard ids.isEmpty else { return }
+        for type in ["PreventUserIdleDisplaySleep", "PreventUserIdleSystemSleep", "PreventSystemSleep", "PreventDiskIdle"] {
+            var id = IOPMAssertionID(0)
+            if IOPMAssertionCreateWithName(type as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Redline NOS: keep everything awake" as CFString, &id) == kIOReturnSuccess { ids.append(id) }
+        }
+        let tick = { [weak self] in
+            guard let self = self else { return }
+            IOPMAssertionDeclareUserActivity("Redline NOS" as CFString, kIOPMUserActiveLocal, &self.activity)
+        }
+        tick()
+        poke = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in tick() }
+    }
+    func off() {
+        poke?.invalidate(); poke = nil
+        ids.forEach { IOPMAssertionRelease($0) }; ids = []
+        if activity != 0 { IOPMAssertionRelease(activity); activity = 0 }
+    }
+    var held: Int { ids.count }
+}
+
 // ---------- Fans: automatic or maximum ----------
 // Changing fan speed needs administrator rights, so that one job is done by a tiny separate helper (src/fan.c) that knows only
 // "max" and "auto". It is installed once, by the owner, with their password ("Enable fan control"). Redline itself never has those rights.
@@ -385,7 +415,7 @@ final class Model: ObservableObject {
             }
         }
     }
-    @Published var nos = false { didSet { if nos != oldValue { Ink.nosOn = nos; announce(); applyFans() } } }   // Coffee Mode is holding the Mac awake
+    @Published var nos = false { didSet { if nos != oldValue { Ink.nosOn = nos; announce(); applyFans() } } }   // NOS: Redline is holding the Mac awake
     /// Tells the Touch Bar app (Glowstrip) which look is on. Local to this Mac: a saved setting plus a notification between the two apps.
     var silent = false      // true while only drawing preview pictures
     func announce() {
@@ -400,17 +430,45 @@ final class Model: ObservableObject {
     static func savedRecords() -> [Double] { (UserDefaults.standard.array(forKey: "records") as? [Double]).flatMap { $0.count == 3 ? $0 : nil } ?? [0, 0, 0] }
     func resetRecords() { rec = [0, 0, 0]; records = rec; UserDefaults.standard.set(rec, forKey: "records") }
     var onNOS: (() -> Void)?
+    // ---- NOS and the optional Coffee Mode app ----
+    // Redline keeps the Mac awake by itself. If the separate Coffee Mode app is also on this Mac, Redline keeps that app's switch
+    // (and its running cup) in step, and follows it when the switch is flipped there. Neither app needs the other.
+    let awake = Awake()
+    private var coffeeSynced = Date.distantPast
+    static let coffeeApp = "/Applications/Coffee Mode.app"
+    static var coffeeAllowed: Bool { ProcessInfo.processInfo.environment["REDLINE_NO_COFFEE"] == nil }      // the variable is for testing the "Redline only" case
+    static var coffeePID: pid_t? { coffeeAllowed ? NSRunningApplication.runningApplications(withBundleIdentifier: "local.coffeemode").first?.processIdentifier : nil }
     static func coffeeOn() -> Bool { (String(data: Probe.run("/usr/bin/pmset", ["-g", "assertions"]), encoding: .utf8) ?? "").contains("Coffee Mode") }
-    func refreshNOS() { DispatchQueue.global(qos: .utility).async { let on = Model.coffeeOn(); DispatchQueue.main.async { if self.nos != on { self.nos = on } } } }
-    /// NOS: flips Coffee Mode (the keep-awake app) with the same local signal its own menu uses.
-    func toggleNOS() {
+    /// Switches NOS. Call on the main thread.
+    func setNOS(_ on: Bool, tellCoffee: Bool = true) {
+        guard on != nos else { return }
+        if !silent { if on { awake.on() } else { awake.off() } }
+        nos = on
+        if on { onNOS?() }
+        if tellCoffee, !silent { syncCoffee(on) }
+    }
+    func toggleNOS() { setNOS(!nos) }
+    /// Brings the Coffee Mode app (if there is one) to the same state, using the local signal its own menu uses.
+    private func syncCoffee(_ on: Bool) {
+        coffeeSynced = Date()
         DispatchQueue.global(qos: .userInitiated).async {
-            func pid() -> String { (String(data: Probe.run("/usr/bin/pgrep", ["-x", "CoffeeMode"]), encoding: .utf8) ?? "").split(separator: "\n").first.map(String.init) ?? "" }
-            if pid().isEmpty { _ = Probe.run("/usr/bin/open", ["-a", "Coffee Mode"]); Thread.sleep(forTimeInterval: 1.5) }
-            let p = pid()
-            if !p.isEmpty { _ = Probe.run("/bin/kill", ["-USR1", p]); Thread.sleep(forTimeInterval: 0.5) }
-            let on = Model.coffeeOn()
-            DispatchQueue.main.async { self.nos = on; if on { self.onNOS?() } }
+            var pid = Model.coffeePID
+            if pid == nil, on, Model.coffeeAllowed, FileManager.default.fileExists(atPath: Model.coffeeApp) {
+                _ = Probe.run("/usr/bin/open", ["-g", "-a", Model.coffeeApp]); Thread.sleep(forTimeInterval: 1.5); pid = Model.coffeePID
+            }
+            if let p = pid, Model.coffeeOn() != on { kill(p, SIGUSR1) }
+            DispatchQueue.main.async { self.coffeeSynced = Date() }
+        }
+    }
+    /// If Coffee Mode is running and its switch was flipped there, NOS follows.
+    func refreshNOS() {
+        DispatchQueue.main.async {
+            guard -self.coffeeSynced.timeIntervalSinceNow > 4 else { return }
+            DispatchQueue.global(qos: .utility).async {
+                guard Model.coffeePID != nil else { return }
+                let on = Model.coffeeOn()
+                DispatchQueue.main.async { if -self.coffeeSynced.timeIntervalSinceNow > 4, self.nos != on { self.setNOS(on, tellCoffee: false) } }
+            }
         }
     }
     /// Where each socket (1-4) physically sits on this MacBook Pro. Fixed, not adjustable: 0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right ("top" = by the hinge).
@@ -829,7 +887,7 @@ struct Panel: View {
                 }
                 Pill(text: "VIBE", on: m.vibe || m.nos, tip: m.nos ? "NOS has taken over the lights. Your VIBE setting comes back when NOS goes off." : m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
                     .disabled(m.nos).opacity(m.nos ? 0.55 : 1)       // NOS is an override: shown as on, dimmed, not clickable
-                Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Coffee Mode: keep the Mac awake, with its own overdrive look") { m.toggleNOS() }
+                Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Keeps the Mac and its screen awake, fans at maximum, with its own overdrive look") { m.toggleNOS() }
                 HStack(spacing: 6) {
                     label("FANS", 8).fixedSize()
                     let setUp = !m.fanReady || m.fanStale, held = m.s.fanForced
@@ -1543,7 +1601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var card: Card!; private var host: NSHostingController<Root>!; private var measure: NSHostingController<Panel>!
     private let backdrop = Backdrop(frame: .zero)
     private let tap = AudioTap(); private var beat: Timer?
-    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?; private var termSig: DispatchSourceSignal?
+    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?; private var termSig: DispatchSourceSignal?; private var nosSig: DispatchSourceSignal?
     private var outside: Any?; private var keys: Any?; private var lit = false
     private let sticky = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil   // testing only: stay open
 
@@ -1573,6 +1631,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
         src.setEventHandler { [weak self] in self?.toggle() }; src.resume(); sig = src
         // Being told to stop from outside (a rebuild, a shutdown script) counts as quitting too, so the fans are always released.
+        // `kill -USR2 <pid>` flips NOS from a script on this Mac, e.g. before a long test run (local signal only).
+        signal(SIGUSR2, SIG_IGN)
+        let two = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        two.setEventHandler { [weak self] in self?.model.toggleNOS() }; two.resume(); nosSig = two
         signal(SIGTERM, SIG_IGN)
         let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         term.setEventHandler { NSApp.terminate(nil) }; term.resume(); termSig = term
