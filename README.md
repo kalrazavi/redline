@@ -27,7 +27,7 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 ## Using it
 
 - Click the needle in the menu bar. Every needle sweeps to the top and settles, with a short ignition sound (**SFX** switches it off).
-- Drag the card by its background to move it. Drag the bottom-right corner to resize it. It always opens at the standard size.
+- Drag the card by its background to move it. Drag the bottom-right corner to resize it: narrow keeps the tall single column, and once that no longer fits the screen and you keep pulling, it reflows into two columns (gauges left, numbers right) and keeps growing. It always opens at the standard size.
 - Click anywhere outside the card, or press Esc, to close it.
 - **VIBE**: a spectrum skyline behind the dials, a bass glow and beat-synced shift-light glow, driven by whatever the Mac is playing. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
 - **NOS**: switches Coffee Mode (the keep-awake app) on or off, with a purple flash.
