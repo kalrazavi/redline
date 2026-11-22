@@ -16,15 +16,22 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 
 ## What it shows
 
-- **CPU Last** (big tachometer), **GPU Last** and **Memory** dials, each with an amber dot marking the peak since you opened the panel
-- One LED column per CPU core, and the busiest app right now
-- **Power in** (watts from the charger), **System draw** (whole Mac, plus CPU and GPU watts), **Battery** (charge, charge/drain watts, health), **Thermals** (CPU and GPU temperature, fan speed)
-- **Network** down and up with Wi-Fi signal, link rate and transmit power; **Disk** read and write
-- **USB bay**: every external device, its speed and the current it asks for
+- **CPU Last** (big tachometer), **GPU Last** and **Memory** dials, each with an amber dot marking the peak since you opened the card
+- Shift lights and a gear indicator that follow CPU load; one LED column per CPU core; the busiest app right now
+- **Power in**, **System draw** (whole Mac, plus CPU and GPU watts), **Battery**, **Thermals** (temperatures and fan speed)
+- **Network** down and up with Wi-Fi signal and link rate; **Disk** read and write
+- **Records**: all-time highs for CPU temperature, power draw and download speed (click to reset)
+- **USB bay**: every external device with its speed and requested current, the charger, and a small top view of the laptop where the sockets in use glow (green = device, amber = charger). Click a position badge if a socket is shown in the wrong place.
 - A red THROTTLED badge when macOS slows the CPU down because of heat
-- Uptime since the last restart
 
-When the panel opens, every needle sweeps to the top and settles, like a car's ignition check.
+## Using it
+
+- Click the needle in the menu bar. Every needle sweeps to the top and settles, with a short ignition sound (**SFX** switches it off).
+- Drag the card by its background to move it. Drag the bottom-right corner to resize it. It always opens at the standard size.
+- Click anywhere outside the card, or press Esc, to close it.
+- **VIBE**: a spectrum skyline behind the dials, a bass glow and beat-synced shift-light glow, driven by whatever the Mac is playing. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
+- **NOS**: switches Coffee Mode (the keep-awake app) on or off, with a purple flash.
+- **Underglow**: four accent colours.
 
 ## Limits
 
