@@ -34,6 +34,14 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 - **NOS**: switches Coffee Mode (the keep-awake app) on or off. While it is on, the card runs its own red overdrive look with racing edge lights that pulses even in silence. Redline makes no sounds.
 - **Touch Bar**: if Glowstrip is running, it follows these switches. it always wears the underglow you picked; VIBE off = standing still, VIBE on = moving with the music; NOS = the NOS look. The two apps talk only on this Mac (a saved setting and a local notification).
 
+## Fans
+
+The **FANS** switch in the footer has two positions: **AUTO** (macOS decides) and **MAX** (both fans at their own rated maximum, the figure the Mac itself reports: 5,927 and 5,489 rpm on this MacBook Pro). NOS always holds the fans at MAX and greys the switch out; when NOS goes off, the fans return to whatever you had chosen.
+
+Changing fan speed needs administrator rights, so that one job is done by a separate helper, `src/fan.c`, about a hundred lines, which understands only `status`, `max` and `auto`. It can never set a speed below what macOS would choose, checks that its setting took, and hands the fan back to macOS if it did not. It is installed once by clicking the switch (it reads SET UP until then), which opens a Terminal window that asks for your Mac password. `Remove fan control.command` inside the app's Resources folder removes it again.
+
+Redline returns the fans to automatic when it quits, and re-applies your choice after the Mac wakes from sleep. Do not run another fan tool (such as Macs Fan Control) at the same time: the two would fight over the fans.
+
 ## Touch Bar is optional
 
 Redline works on any Mac. If the Mac has a Touch Bar and Glowstrip is installed, Redline starts it and the two share one look; if there is no Touch Bar, that part is skipped and nothing else changes. `Install Redline.command` installs Redline, and Glowstrip too when a Touch Bar is found and the Glowstrip folder sits next to this one. While NOS is on, the underglow dots are greyed out and locked; the one you had picked stays faintly marked and returns when NOS goes off.

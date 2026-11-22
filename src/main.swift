@@ -88,6 +88,7 @@ struct Snap {
     var wireless: [Wireless] = []
     var hog = ""; var hogPct = 0.0
     var uptime: TimeInterval = 0
+    var fanForced = false     // the sensor chip says the fans are held at a fixed speed
     var chargerSocket = 0     // which USB-C socket (1-4) the charger is in; 0 = none or unknown
 }
 
@@ -128,6 +129,7 @@ final class Probe {
 
     /// Cheap extras while the card is closed, so the records keep counting: whole-Mac watts and CPU temperature.
     func light(into s: inout Snap) {
+        s.fanForced = (smc.read("F0Md") ?? 0) > 0
         s.sysW = smc.first(["PSTR"]) { $0 > 0.05 && $0 < 400 }
         s.cpuTemp = smc.first(["TCXC", "TC0F", "TC0E", "TC0P", "TC0D"]) { $0 > 5 && $0 < 125 }
     }
@@ -204,6 +206,7 @@ final class Probe {
         s.gpuTemp = smc.first(["TG0P", "TGDD", "TG0D", "TG1D"], temp)
         let nf = Int(smc.read("FNum") ?? 0)
         s.fans = (0..<min(nf, 4)).compactMap { smc.read("F\($0)Ac") }
+        s.fanForced = (smc.read("F0Md") ?? 0) > 0
         if let mx = smc.read("F0Mx"), mx > 1000 { s.fanMax = mx }
         var st: Unmanaged<CFDictionary>?
         if IOPMCopyCPUPowerStatus(&st) == kIOReturnSuccess, let d = st?.takeRetainedValue() as? [String: Any] {
@@ -330,6 +333,19 @@ final class Probe {
     }
 }
 
+// ---------- Fans: automatic or maximum ----------
+// Changing fan speed needs administrator rights, so that one job is done by a tiny separate helper (src/fan.c) that knows only
+// "max" and "auto". It is installed once, by the owner, with their password ("Enable fan control"). Redline itself never has those rights.
+enum Fans {
+    static let helper = "/Library/Application Support/Redline/redline-fan"
+    /// True once the helper is installed the way it must be: owned by the system and allowed to act for it.
+    static var ready: Bool {
+        guard let a = try? FileManager.default.attributesOfItem(atPath: helper) else { return false }
+        return (a[.ownerAccountID] as? NSNumber)?.intValue == 0 && ((a[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o4000 != 0
+    }
+    static func set(max: Bool) { guard ready else { return }; _ = Probe.run(helper, [max ? "max" : "auto"]) }
+}
+
 // ---------- The model the panel watches ----------
 final class Model: ObservableObject {
     @Published var s = Snap()
@@ -337,7 +353,16 @@ final class Model: ObservableObject {
     let scale: CGFloat = 1                                              // the card has one fixed size
     @Published var vibe = UserDefaults.standard.bool(forKey: "vibe")    // music-reactive backdrop
     @Published var vibeNote = ""
-    @Published var nos = false { didSet { if nos != oldValue { Ink.nosOn = nos; announce() } } }   // Coffee Mode is holding the Mac awake
+    @Published var fanMax = UserDefaults.standard.bool(forKey: "fanMax")      // your own choice: false = automatic, true = maximum
+    @Published var fanReady = Fans.ready
+    /// NOS always means maximum; otherwise it is your choice.
+    var fansWanted: Bool { nos || fanMax }
+    private var fanApplied = Date.distantPast
+    func applyFans() {
+        fanApplied = Date(); let want = fansWanted
+        DispatchQueue.global(qos: .userInitiated).async { let ok = Fans.ready; if ok { Fans.set(max: want) }; DispatchQueue.main.async { if self.fanReady != ok { self.fanReady = ok } } }
+    }
+    @Published var nos = false { didSet { if nos != oldValue { Ink.nosOn = nos; announce(); applyFans() } } }   // Coffee Mode is holding the Mac awake
     /// Tells the Touch Bar app (Glowstrip) which look is on. Local to this Mac: a saved setting plus a notification between the two apps.
     var silent = false      // true while only drawing preview pictures
     func announce() {
@@ -380,7 +405,7 @@ final class Model: ObservableObject {
     private var busySlow = false
     private lazy var sockets = probe.socketTable()
 
-    func start() { schedule(2.0); refreshNOS(); announce() }
+    func start() { schedule(2.0); refreshNOS(); announce(); applyFans() }
     private func schedule(_ every: Double) {
         timer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: q)
@@ -413,6 +438,8 @@ final class Model: ObservableObject {
         let snap = work, isOpen = open, settled = n > 2
         DispatchQueue.main.async {
             self.onTick?(snap.cpu)
+            // macOS takes the fans back after sleep; if what the Mac is doing no longer matches what is wanted, set it again
+            if snap.fanForced != self.fansWanted, -self.fanApplied.timeIntervalSinceNow > 6 { self.applyFans() }
             var r = self.rec
             r[0] = max(r[0], snap.cpuTemp ?? 0); r[1] = max(r[1], snap.sysW ?? 0); if isOpen, settled { r[2] = max(r[2], snap.down) }
             if r != self.rec { self.rec = r; UserDefaults.standard.set(r, forKey: "records") }
@@ -643,7 +670,7 @@ struct Pill: View {
     var body: some View {
         Button(action: action) {
             Text(text).font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(1.5)
-                .foregroundColor(on ? .black : Ink.mid).frame(width: 46, height: 18)
+                .foregroundColor(on ? .black : Ink.mid).fixedSize().frame(width: text.count > 5 ? 58 : 46, height: 18)
                 .background(Capsule().fill(on ? tint : Color.white.opacity(0.07))).contentShape(Rectangle())
         }.buttonStyle(.plain).help(tip)
     }
@@ -778,7 +805,18 @@ struct Panel: View {
                 Pill(text: "VIBE", on: m.vibe, tip: m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
                 Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Coffee Mode: keep the Mac awake, with its own overdrive look") { m.toggleNOS() }
                 HStack(spacing: 6) {
-                    label("UNDERGLOW", 8).opacity(m.nos ? 0.45 : 1)
+                    label("FANS", 8).fixedSize()
+                    Pill(text: !m.fanReady ? "SET UP" : (m.fansWanted ? "MAX" : "AUTO"), on: m.fanReady && m.fansWanted, tint: Ink.amber,
+                         tip: !m.fanReady ? "Fan control needs a one-time set-up with your Mac password. Click to start it."
+                              : (m.nos ? "Held at maximum while NOS is on" : (m.fanMax ? "Both fans at their rated maximum. Click for automatic." : "macOS controls the fans. Click for maximum."))) {
+                        if !m.fanReady {
+                            if Fans.ready { m.applyFans() }
+                            else if let r = Bundle.main.resourcePath { NSWorkspace.shared.open(URL(fileURLWithPath: r + "/Enable fan control.command")) }
+                        } else { m.fanMax.toggle(); UserDefaults.standard.set(m.fanMax, forKey: "fanMax"); m.applyFans() }
+                    }.disabled(m.nos && m.fanReady).opacity(m.nos && m.fanReady ? 0.55 : 1)
+                }.padding(.leading, 6)
+                HStack(spacing: 5) {
+                    label("GLOW", 8).fixedSize().opacity(m.nos ? 0.45 : 1)
                     ForEach(0..<8, id: \.self) { i in
                         Button(action: { Ink.glow = i; UserDefaults.standard.set(i, forKey: "glow"); m.theme = i; m.announce() }) {
                             Circle().fill(Ink.glows[i]).frame(width: 10, height: 10)
@@ -1553,7 +1591,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let o = outside { NSEvent.removeMonitor(o); outside = nil }
         if let k = keys { NSEvent.removeMonitor(k); keys = nil }
     }
-    func applicationWillTerminate(_ n: Notification) { tap.stop() }
+    func applicationWillTerminate(_ n: Notification) { tap.stop(); Fans.set(max: false) }      // never leave the fans held when Redline is not there to release them
 }
 
 @MainActor func writePNG(_ img: NSImage, _ path: String, px: Int) {
