@@ -159,7 +159,7 @@ final class Probe {
             if c.contains("AMD") { amd = max(amd, u); seenAMD = true } else if c.contains("Intel") { intel = max(intel, u); seenIntel = true } else { other = max(other, u) }
         }
         s.gpu = min(1, max(amd, intel, other) / 100)
-        s.gpuNote = seenAMD && seenIntel ? String(format: "RADEON %02.0f · INTEL %02.0f", amd, intel) : (seenAMD ? "RADEON" : seenIntel ? "INTEL" : "GPU")
+        s.gpuNote = seenAMD && seenIntel ? String(format: "AMD %02.0f · INTEL %02.0f", amd, intel) : (seenAMD ? "RADEON" : seenIntel ? "INTEL" : "GPU")
 
         // Memory
         var vm = vm_statistics64(); var c = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
@@ -492,12 +492,13 @@ struct Dial: View {
                 .frame(width: size * 0.115, height: size * 0.115).overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
             VStack(spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text(big).font(digits(size * 0.15, .bold)).foregroundColor(.white)
+                    Text(big).font(digits(size * 0.145, .bold)).foregroundColor(.white)
                     Text(unit).font(.system(size: size * 0.06, weight: .semibold, design: .rounded)).foregroundColor(Ink.dim)
                 }
                 label(title, max(9, size * 0.05))
-                Text(sub).font(digits(max(8.5, size * 0.043), .medium)).foregroundColor(Ink.dim).padding(.top, 1).lineLimit(1)
-            }.offset(y: size * 0.29)
+                Text(sub).font(digits(max(8, size * 0.043), .medium)).foregroundColor(Ink.dim).padding(.top, 1).lineLimit(1)
+                    .frame(maxWidth: size * 0.56)      // never wider than the circle is at that height
+            }.offset(y: size * 0.255)
         }
         .frame(width: size, height: size)
         .animation(spring, value: value).animation(.easeOut(duration: 0.4), value: peak)
@@ -742,9 +743,9 @@ struct Panel: View {
             HStack(alignment: .bottom, spacing: 30) {
                 Dial(title: "GPU LAST", value: v(s.gpu), peak: m.peakGPU, big: String(format: "%02.0f", s.gpu * 100), unit: "%", sub: s.gpuNote, size: 158)
                 Dial(title: "CPU LAST", value: v(s.cpu), peak: m.peakCPU, big: String(format: "%02.0f", s.cpu * 100), unit: "%",
-                     sub: s.cpuW.map { String(format: "%.1f W PACKAGE", $0) } ?? "x10 %", size: 216, numbers: true)
+                     sub: s.cpuW.map { String(format: "%.1f W CHIP", $0) } ?? "x10 %", size: 216, numbers: true)
                 Dial(title: "MEMORY", value: v(s.mem), peak: m.peakMem, big: String(format: "%.1f", s.memUsedGB), unit: "GB",
-                     sub: String(format: "OF %.0f GB · %@", s.memTotalGB, s.pressure >= 4 ? "CRITICAL" : s.pressure == 2 ? "TIGHT" : "RELAXED"), size: 158, redFrom: 0.85)
+                     sub: String(format: "/ %.0f GB · %@", s.memTotalGB, s.pressure >= 4 ? "CRITICAL" : s.pressure == 2 ? "TIGHT" : "CALM"), size: 158, redFrom: 0.85)
             }
             // cores
             VStack(spacing: 8) {
@@ -952,12 +953,14 @@ final class AudioTap {
 }
 
 // ---------- The backdrop: plain Core Animation layers behind the gauges, so it costs almost nothing ----------
-// With VIBE on it shows three silky, mirrored waves (bass in the middle), a breathing glow behind each dial,
-// and a ring that leaves the big dial on every kick. Everything is symmetric about the centre line.
+// With VIBE on: three silky mirrored waves whose colour drifts from the accent in the middle to magenta at the edges,
+// a soft aurora and a breathing glow behind each dial, fine sparks rising on the treble, and a double ring leaving
+// the big dial on every kick. Everything is symmetric about the centre line.
 final class Backdrop: NSView {
     private let grad = CAGradientLayer(), under = CAGradientLayer(), flashLayer = CALayer()
-    private let waveBox = CALayer(), waveFade = CAGradientLayer(), crest = CAShapeLayer(), crestGlow = CAShapeLayer(), ringBox = CALayer()
-    private var waves: [CAShapeLayer] = [], glows: [CAGradientLayer] = [], halos: [CALayer] = []
+    private let waveBox = CALayer(), waveFade = CAGradientLayer(), ringBox = CALayer(), sparks = CAEmitterLayer()
+    private var fills: [CAGradientLayer] = [], masks: [CAShapeLayer] = []          // 3 waves, then crest glow, then crest line
+    private var glows: [CAGradientLayer] = [], aurora: [CAGradientLayer] = [], halos: [CALayer] = []
     private var k: CGFloat = 1, tint = -1, bassAvg: CGFloat = 0, beat: CGFloat = 0, lastRing = 0.0
     private static let points = 21
     private var heights = Array(repeating: [CGFloat](repeating: 0, count: Backdrop.points), count: 3)
@@ -969,12 +972,29 @@ final class Backdrop: NSView {
         wantsLayer = true
         grad.colors = [NSColor(Ink.bg1).cgColor, NSColor(Ink.bg0).cgColor]; grad.startPoint = CGPoint(x: 0.5, y: 1); grad.endPoint = CGPoint(x: 0.5, y: 0)
         layer?.addSublayer(grad)
-        for _ in 0..<3 { let w = CAShapeLayer(); w.strokeColor = nil; waves.append(w); waveBox.addSublayer(w) }
-        for l in [crestGlow, crest] { l.fillColor = nil; l.lineJoin = .round; l.lineCap = .round; waveBox.addSublayer(l) }
-        waveFade.colors = [NSColor.white.cgColor, NSColor.white.withAlphaComponent(0.25).cgColor]      // waves soften towards the bottom
+        for _ in 0..<2 {      // aurora: two wide, very soft colour clouds, mirrored left and right
+            let a = CAGradientLayer(); a.type = .radial; a.startPoint = CGPoint(x: 0.5, y: 0.5); a.endPoint = CGPoint(x: 1, y: 1); a.opacity = 0
+            aurora.append(a); layer?.addSublayer(a)
+        }
+        for i in 0..<5 {
+            let g = CAGradientLayer(); g.startPoint = CGPoint(x: 0, y: 0.5); g.endPoint = CGPoint(x: 1, y: 0.5); g.locations = [0, 0.25, 0.5, 0.75, 1]
+            let m = CAShapeLayer(); m.lineJoin = .round; m.lineCap = .round
+            if i < 3 { m.fillColor = NSColor.white.cgColor; m.strokeColor = nil } else { m.fillColor = nil; m.strokeColor = NSColor.white.cgColor }
+            g.mask = m; fills.append(g); masks.append(m); waveBox.addSublayer(g)
+        }
+        waveFade.colors = [NSColor.white.cgColor, NSColor.white.withAlphaComponent(0.18).cgColor]      // waves melt away towards the bottom
         waveFade.startPoint = CGPoint(x: 0.5, y: 1); waveFade.endPoint = CGPoint(x: 0.5, y: 0)
         waveBox.mask = waveFade; waveBox.opacity = 0
         layer?.addSublayer(waveBox)
+        // sparks: tiny soft dots that rise from the waves when there is treble
+        let dot = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
+            NSGradient(starting: .white, ending: NSColor.white.withAlphaComponent(0))?.draw(in: NSBezierPath(ovalIn: r), relativeCenterPosition: .zero); return true
+        }
+        let cell = CAEmitterCell(); cell.contents = dot.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        cell.birthRate = 34; cell.lifetime = 3.2; cell.lifetimeRange = 1.2; cell.velocity = 30; cell.velocityRange = 16
+        cell.emissionLongitude = .pi / 2; cell.emissionRange = 0.35; cell.scale = 0.22; cell.scaleRange = 0.14; cell.alphaSpeed = -0.28; cell.alphaRange = 0.3
+        sparks.emitterCells = [cell]; sparks.emitterShape = .line; sparks.birthRate = 0; sparks.renderMode = .additive
+        layer?.addSublayer(sparks)
         for _ in 0..<3 {
             let g = CAGradientLayer(); g.type = .radial; g.startPoint = CGPoint(x: 0.5, y: 0.5); g.endPoint = CGPoint(x: 1, y: 1); g.opacity = 0
             glows.append(g); layer?.addSublayer(g)
@@ -993,18 +1013,36 @@ final class Backdrop: NSView {
         a.timingFunction = CAMediaTimingFunction(name: .easeOut); flashLayer.add(a, forKey: "flash")
     }
     private func centre(_ i: Int) -> CGPoint { CGPoint(x: dials[i].x * k, y: bounds.height - dials[i].y * k) }
+    /// The accent colour moved part of the way round the colour wheel towards magenta (the short way).
+    private func toward(_ c: NSColor, _ t: CGFloat) -> NSColor {
+        guard let rgb = c.usingColorSpace(.deviceRGB) else { return c }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0; rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        var d = 0.86 - h; if d > 0.5 { d -= 1 }; if d < -0.5 { d += 1 }
+        let nh = h + d * t
+        return NSColor(hue: nh - floor(nh), saturation: min(1, s + 0.12), brightness: b, alpha: 1)
+    }
 
     func place(scale: CGFloat) {
         k = scale
         CATransaction.begin(); CATransaction.setDisableActions(true)
         for l in [grad, waveBox, ringBox, flashLayer] as [CALayer] { l.frame = bounds }
-        for l in waves + [crest, crestGlow] { l.frame = bounds }
+        for l in fills as [CALayer] + masks as [CALayer] { l.frame = bounds }
         waveFade.frame = CGRect(x: 0, y: bounds.height - baseline * k, width: bounds.width, height: baseline * k)
-        crest.lineWidth = 1.5 * k; crestGlow.lineWidth = 7 * k
+        masks[3].lineWidth = 9 * k; masks[4].lineWidth = 1.6 * k
         for (i, g) in glows.enumerated() {
             let size = dials[i].r * 4.6 * k, c = centre(i)
             g.frame = CGRect(x: c.x - size / 2, y: c.y - size / 2, width: size, height: size)
         }
+        for (i, a) in aurora.enumerated() {
+            let w = 620 * k, h = 420 * k, x = (i == 0 ? 150 : cardW - 150) * k
+            a.frame = CGRect(x: x - w / 2, y: bounds.height - 250 * k - h / 2, width: w, height: h)
+            // a slow, mirrored drift so the colour never sits still
+            let drift = CABasicAnimation(keyPath: "transform.translation.x"); drift.fromValue = 0; drift.toValue = (i == 0 ? 46 : -46) * k
+            drift.duration = 7; drift.autoreverses = true; drift.repeatCount = .infinity; drift.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            a.add(drift, forKey: "drift")
+        }
+        sparks.frame = bounds; sparks.emitterPosition = CGPoint(x: bounds.midX, y: bounds.height - (baseline - 40) * k)
+        sparks.emitterSize = CGSize(width: (cardW - 120) * k, height: 1)
         under.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 3 * k)
         let hw = (cardW - 32 - 95) / 20.0 * k
         for (i, h) in halos.enumerated() {
@@ -1016,13 +1054,17 @@ final class Backdrop: NSView {
     private func recolor(force: Bool = false) {
         guard force || tint != Ink.glow else { return }
         tint = Ink.glow
-        let c = NSColor(Ink.ice)
+        let c = NSColor(Ink.ice), c1 = toward(c, 0.5), c2 = toward(c, 0.95)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        for (w, a) in zip(waves, [0.10, 0.14, 0.20] as [CGFloat]) { w.fillColor = c.withAlphaComponent(a).cgColor }     // back, middle, front
-        crest.strokeColor = c.withAlphaComponent(0.95).cgColor; crestGlow.strokeColor = c.withAlphaComponent(0.20).cgColor
-        glows.forEach { $0.colors = [c.withAlphaComponent(0.50).cgColor, c.withAlphaComponent(0).cgColor] }
+        for (g, a) in zip(fills, [0.16, 0.22, 0.30, 0.26, 1.0] as [CGFloat]) {      // back, middle, front wave, crest glow, crest line
+            g.colors = [c2, c1, c, c1, c2].map { $0.withAlphaComponent(a).cgColor }
+        }
+        glows[0].colors = [c.withAlphaComponent(0.50).cgColor, c.withAlphaComponent(0).cgColor]
+        for g in glows[1...] { g.colors = [c1.withAlphaComponent(0.50).cgColor, c1.withAlphaComponent(0).cgColor] }
+        aurora.forEach { $0.colors = [c2.withAlphaComponent(0.34).cgColor, c1.withAlphaComponent(0.12).cgColor, c1.withAlphaComponent(0).cgColor] }
+        sparks.emitterCells?.first?.color = c.blended(withFraction: 0.45, of: .white)?.cgColor
         halos.forEach { $0.backgroundColor = c.withAlphaComponent(0.55).cgColor }
-        under.colors = [c.withAlphaComponent(0).cgColor, c.cgColor, c.withAlphaComponent(0).cgColor]
+        under.colors = [c2.withAlphaComponent(0).cgColor, c1.cgColor, c.cgColor, c1.cgColor, c2.withAlphaComponent(0).cgColor]
         CATransaction.commit()
     }
     /// A smooth curve through evenly spaced heights (Catmull-Rom), optionally closed down to the baseline.
@@ -1038,17 +1080,22 @@ final class Backdrop: NSView {
         if closed { p.closeSubpath() }
         return p
     }
+    /// A kick: two rings leave the rim of the big dial, the second a moment behind and fainter.
     private func ring() {
-        let c = centre(0), r = dials[0].r * k
-        let l = CAShapeLayer(); l.frame = CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
-        l.path = CGPath(ellipseIn: l.bounds.insetBy(dx: 1, dy: 1), transform: nil)
-        l.fillColor = nil; l.strokeColor = NSColor(Ink.ice).cgColor; l.lineWidth = 2 * k; l.opacity = 0
-        ringBox.addSublayer(l)
-        let grow = CABasicAnimation(keyPath: "transform.scale"); grow.fromValue = 1.0; grow.toValue = 1.85
-        let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 0.55; fade.toValue = 0.0
-        let g = CAAnimationGroup(); g.animations = [grow, fade]; g.duration = 1.0; g.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        CATransaction.begin(); CATransaction.setCompletionBlock { l.removeFromSuperlayer() }
-        l.add(g, forKey: "ring"); CATransaction.commit()
+        let c = centre(0), r = dials[0].r * k, col = NSColor(Ink.ice)
+        for (delay, alpha, width) in [(0.0, 0.60, 2.2), (0.13, 0.30, 1.2)] as [(Double, Float, CGFloat)] {
+            let l = CAShapeLayer(); l.frame = CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
+            l.path = CGPath(ellipseIn: l.bounds.insetBy(dx: 1, dy: 1), transform: nil)
+            l.fillColor = nil; l.strokeColor = col.cgColor; l.lineWidth = width * k; l.opacity = 0
+            ringBox.addSublayer(l)
+            let grow = CABasicAnimation(keyPath: "transform.scale"); grow.fromValue = 1.0; grow.toValue = 1.9
+            let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = alpha; fade.toValue = 0.0
+            let thin = CABasicAnimation(keyPath: "lineWidth"); thin.fromValue = width * k; thin.toValue = 0.4 * k
+            let g = CAAnimationGroup(); g.animations = [grow, fade, thin]; g.duration = 1.1; g.beginTime = CACurrentMediaTime() + delay
+            g.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)        // fast out, long glide
+            CATransaction.begin(); CATransaction.setCompletionBlock { l.removeFromSuperlayer() }
+            l.add(g, forKey: "ring"); CATransaction.commit()
+        }
     }
     func set(_ levels: [Float]) {
         recolor()
@@ -1062,12 +1109,14 @@ final class Backdrop: NSView {
         for j in 1..<n - 1 { target[j] = raw[j - 1] * 0.25 + raw[j] * 0.5 + raw[j + 1] * 0.25 }
         let follow: [CGFloat] = [0.10, 0.20, 0.42], gain: [CGFloat] = [1.15, 0.92, 0.68]       // the back wave is tall and lazy, the front one low and quick
         for i in 0..<3 { for j in 0..<n { heights[i][j] += (target[j] - heights[i][j]) * follow[i] } }
-        let loud = CGFloat(levels.max() ?? 0), bass = CGFloat(levels.prefix(6).reduce(0, +) / 6), mid = CGFloat(levels[14..<34].reduce(0, +) / 20)
+        let loud = CGFloat(levels.max() ?? 0), bass = CGFloat(levels.prefix(6).reduce(0, +) / 6)
+        let mid = CGFloat(levels[14..<34].reduce(0, +) / 20), high = CGFloat(levels[34...].reduce(0, +)) / CGFloat(max(1, levels.count - 34))
 
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        for i in 0..<3 { waves[i].path = curve(heights[i], gain: gain[i], closed: true) }
-        let line = curve(heights[2], gain: gain[2], closed: false); crest.path = line; crestGlow.path = line
+        for i in 0..<3 { masks[i].path = curve(heights[i], gain: gain[i], closed: true) }
+        let line = curve(heights[2], gain: gain[2], closed: false); masks[3].path = line; masks[4].path = line
         waveBox.opacity = Float(min(1, max(heights[0].max() ?? 0, loud) * 5))        // fades out completely in silence
+        sparks.birthRate = Float(min(1, high * 1.6))
         CATransaction.commit()
 
         CATransaction.begin(); CATransaction.setAnimationDuration(0.10)
@@ -1075,8 +1124,9 @@ final class Backdrop: NSView {
             let v = i == 0 ? bass : mid * 1.2, sc = 0.72 + 0.42 * v
             g.opacity = Float(min(1, v * 1.1)); g.transform = CATransform3DMakeScale(sc, sc, 1)
         }
+        aurora.forEach { $0.opacity = Float(min(1, (heights[0].max() ?? 0) * 1.4)) }      // follows the lazy back wave, so it swells and never flickers
         under.opacity = Float(min(1, bass * 1.3))
-        // a kick drum = bass jumping well above its recent average: a ring leaves the big dial and the shift lights glow from the middle out
+        // a kick drum = bass jumping well above its recent average: rings leave the big dial and the shift lights glow from the middle out
         let now = CACurrentMediaTime()
         if bass > 0.22, bass > bassAvg * 1.3 { beat = 1; if now - lastRing > 0.24 { lastRing = now; ring() } } else { beat *= 0.80 }
         bassAvg = bassAvg * 0.92 + bass * 0.08
