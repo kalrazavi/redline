@@ -788,12 +788,13 @@ struct Panel: View {
                 Pill(text: "VIBE", on: m.vibe, tip: m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
                 Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Coffee Mode: keep the Mac awake, with its own overdrive look") { m.toggleNOS() }
                 HStack(spacing: 6) {
-                    label("UNDERGLOW", 8)
+                    label("UNDERGLOW", 8).opacity(m.nos ? 0.45 : 1)
                     ForEach(0..<8, id: \.self) { i in
                         Button(action: { Ink.glow = i; UserDefaults.standard.set(i, forKey: "glow"); m.theme = i; m.announce() }) {
                             Circle().fill(Ink.glows[i]).frame(width: 10, height: 10)
-                                .overlay(Circle().strokeBorder(Color.white.opacity(m.theme == i ? 0.95 : 0), lineWidth: 1.5).padding(-2.5))
-                        }.buttonStyle(.plain).help(Ink.glowNames[i])
+                                .saturation(m.nos ? 0.15 : 1).opacity(m.nos ? (m.theme == i ? 0.60 : 0.25) : 1)        // greyed out while NOS runs
+                                .overlay(Circle().strokeBorder(Color.white.opacity(m.theme == i ? (m.nos ? 0.40 : 0.95) : 0), lineWidth: 1.5).padding(-2.5))
+                        }.buttonStyle(.plain).disabled(m.nos).help(m.nos ? "Locked while NOS is on. \(Ink.glowNames[i]) comes back when you switch NOS off." : Ink.glowNames[i])
                     }
                 }.padding(.leading, 10)
                 Spacer()
@@ -950,6 +951,23 @@ enum BarIcon {
             ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.3).cgColor); ctx.setLineWidth(5); ctx.strokeEllipse(in: CGRect(x: c.x - 46, y: c.y - 46, width: 92, height: 92))
             return true
         }
+    }
+}
+
+// ---------- The Touch Bar is optional ----------
+/// True only on a Mac that has a Touch Bar. Everything else in Redline works the same without one.
+func macHasTouchBar() -> Bool {
+    guard let lib = dlopen("/System/Library/PrivateFrameworks/DFRFoundation.framework/DFRFoundation", RTLD_NOW), let sym = dlsym(lib, "DFRGetScreenSize") else { return false }
+    typealias SizeCall = @convention(c) () -> CGSize
+    return unsafeBitCast(sym, to: SizeCall.self)().width > 0
+}
+/// Starts the Touch Bar companion (Glowstrip) if this Mac has a Touch Bar, the companion is installed and it is not already running.
+func startTouchBarCompanion() {
+    DispatchQueue.global(qos: .utility).async {
+        let app = "/Applications/Glowstrip.app"
+        guard macHasTouchBar(), FileManager.default.fileExists(atPath: app) else { return }
+        guard (String(data: Probe.run("/usr/bin/pgrep", ["-x", "Glowstrip"]), encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        _ = Probe.run("/usr/bin/open", ["-g", "-a", app])
     }
 }
 
@@ -1477,6 +1495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onTick = { [weak self] in self?.redraw($0) }
         model.onNOS = { [weak self] in self?.backdrop.flash() }
         model.start()
+        startTouchBarCompanion()
         // `kill -USR1 <pid>` opens or closes the panel from a script on this Mac (local signal only).
         signal(SIGUSR1, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
@@ -1567,6 +1586,7 @@ if args.count >= 2, args[1] == "--probe" {
     print(s); usb.forEach { print($0) }
     exit(0)
 }
+if args.count >= 2, args[1] == "--hasbar" { print(macHasTouchBar() ? "yes" : "no"); exit(0) }
 if args.count >= 2, args[1] == "--audiotest" {
     // Listens for three seconds and prints how loud the loudest bar got (0 = silence or not allowed).
     let t = AudioTap(); if let why = t.start() { print("could not start:", why); exit(1) }

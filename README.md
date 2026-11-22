@@ -34,6 +34,10 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 - **NOS**: switches Coffee Mode (the keep-awake app) on or off. While it is on, the card runs its own red overdrive look with racing edge lights that pulses even in silence. Redline makes no sounds.
 - **Touch Bar**: if Glowstrip is running, it follows these switches. it always wears the underglow you picked; VIBE off = standing still, VIBE on = moving with the music; NOS = the NOS look. The two apps talk only on this Mac (a saved setting and a local notification).
 
+## Touch Bar is optional
+
+Redline works on any Mac. If the Mac has a Touch Bar and Glowstrip is installed, Redline starts it and the two share one look; if there is no Touch Bar, that part is skipped and nothing else changes. `Install Redline.command` installs Redline, and Glowstrip too when a Touch Bar is found and the Glowstrip folder sits next to this one. While NOS is on, the underglow dots are greyed out and locked; the one you had picked stays faintly marked and returns when NOS goes off.
+
 ## Limits
 
 - USB current is what each device *requests*, not a live measurement. macOS does not measure it.
