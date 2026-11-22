@@ -29,9 +29,10 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 - Click the needle in the menu bar. Every needle sweeps to the top and settles.
 - Drag the card by its background to move it. It has one fixed size.
 - Click anywhere outside the card, or press Esc, to close it.
-- **VIBE**: behind the dials, three soft mirrored waves whose colour drifts from the accent in the middle to magenta at the edges, a slow aurora, a glow breathing behind each dial, fine sparks on the treble, a double ring leaving the big dial on every kick and a beat glow behind the shift lights, driven by whatever the Mac is playing. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
-- **NOS**: switches Coffee Mode (the keep-awake app) on or off, with a purple flash. Redline makes no sounds.
-- **Underglow**: four accent colours.
+- **VIBE**: club lighting behind the dials, driven by whatever the Mac is playing: waves, a glow behind each dial, rings off the big dial on every kick, a strobe, and mirrored sparks that are released on the beat and rise higher when the music lifts. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
+- **Underglow**: four looks, each its own lighting rig. Ice · CDJ (waves, a jog-wheel ring turning at 33 1/3 rpm, a few beams), Nitrous · Laser (a sweeping fan of beams and a strobe), Toxic · Radar (a radar sweep and rings from all three dials), Sunset · Sunrise (a striped sun behind the big dial).
+- **NOS**: switches Coffee Mode (the keep-awake app) on or off. While it is on, the card runs its own red overdrive look with racing edge lights that pulses even in silence. Redline makes no sounds.
+- **Touch Bar**: if Glowstrip is running, it follows these switches. VIBE off = its standard look; VIBE on = the underglow you picked; NOS = the NOS look. The two apps talk only on this Mac (a saved setting and a local notification).
 
 ## Limits
 

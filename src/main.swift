@@ -309,7 +309,13 @@ final class Model: ObservableObject {
     let scale: CGFloat = 1                                              // the card has one fixed size
     @Published var vibe = UserDefaults.standard.bool(forKey: "vibe")    // music-reactive backdrop
     @Published var vibeNote = ""
-    @Published var nos = false                                                              // Coffee Mode is holding the Mac awake
+    @Published var nos = false { didSet { if nos != oldValue { Ink.nosOn = nos; announce() } } }   // Coffee Mode is holding the Mac awake
+    /// Tells the Touch Bar app (Glowstrip) which look is on. Local to this Mac: a saved setting plus a notification between the two apps.
+    func announce() {
+        UserDefaults.standard.set(nos, forKey: "nos")
+        DistributedNotificationCenter.default().postNotificationName(Notification.Name("local.redline.theme"), object: nil,
+                                                                     userInfo: ["glow": Ink.glow, "vibe": vibe, "nos": nos], deliverImmediately: true)
+    }
     /// All-time highs: CPU temperature (°C), whole-Mac draw (W), download speed (bytes/s).
     @Published var records: [Double] = Model.savedRecords()
     private var rec: [Double] = Model.savedRecords()
@@ -350,7 +356,7 @@ final class Model: ObservableObject {
     private var busySlow = false
     private lazy var sockets = probe.socketTable()
 
-    func start() { schedule(2.0) }
+    func start() { schedule(2.0); refreshNOS(); announce() }
     private func schedule(_ every: Double) {
         timer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: q)
@@ -379,7 +385,7 @@ final class Model: ObservableObject {
                 }
             }
             n += 1
-        } else { probe.cpuOnly(into: &work); probe.light(into: &work) }
+        } else { probe.cpuOnly(into: &work); probe.light(into: &work); n += 1; if n % 10 == 0 { refreshNOS() } }     // notices Coffee Mode being switched elsewhere
         let snap = work, isOpen = open, settled = n > 2
         DispatchQueue.main.async {
             self.onTick?(snap.cpu)
@@ -413,12 +419,17 @@ final class Model: ObservableObject {
 enum Ink {
     static let bg0 = Color(red: 0.035, green: 0.043, blue: 0.055), bg1 = Color(red: 0.063, green: 0.075, blue: 0.094)
     static let tile = Color(red: 0.082, green: 0.098, blue: 0.122).opacity(0.90), line = Color.white.opacity(0.07)
+    // Four underglows plus NOS. Each has a partner colour it shifts into (the same pairs the Touch Bar uses).
     static let glows: [Color] = [Color(red: 0.25, green: 0.90, blue: 1.0), Color(red: 0.72, green: 0.45, blue: 1.0),
-                                 Color(red: 0.45, green: 1.0, blue: 0.35), Color(red: 1.0, green: 0.55, blue: 0.15)]
-    static let glowNames = ["ICE", "NITROUS", "TOXIC", "SUNSET"]
-    static let nos = Color(red: 0.72, green: 0.45, blue: 1.0)
-    static var glow = UserDefaults.standard.integer(forKey: "glow") % 4
-    static var ice: Color { glows[glow] }
+                                 Color(red: 0.45, green: 1.0, blue: 0.35), Color(red: 1.0, green: 0.55, blue: 0.15), Color(red: 1.0, green: 0.14, blue: 0.24)]
+    static let partners: [Color] = [Color(red: 1.0, green: 0.18, blue: 0.62), Color(red: 0.20, green: 0.92, blue: 1.0),
+                                    Color(red: 1.0, green: 0.92, blue: 0.10), Color(red: 1.0, green: 0.16, blue: 0.50), Color(red: 0.66, green: 0.30, blue: 1.0)]
+    static let glowNames = ["ICE · CDJ", "NITROUS · LASER", "TOXIC · RADAR", "SUNSET · SUNRISE"]
+    static let nos = Color(red: 1.0, green: 0.14, blue: 0.24)
+    static var glow = UserDefaults.standard.integer(forKey: "glow") % 4      // the underglow you picked
+    static var nosOn = false                                                 // NOS overrides it with its own look
+    static var active: Int { nosOn ? 4 : glow }
+    static var ice: Color { glows[active] }
     static let amber = Color(red: 1.0, green: 0.72, blue: 0.20)
     static let red = Color(red: 1.0, green: 0.27, blue: 0.23), green = Color(red: 0.35, green: 0.92, blue: 0.60)
     static let dim = Color.white.opacity(0.42), mid = Color.white.opacity(0.68)
@@ -692,12 +703,12 @@ struct Panel: View {
                     do { if loginOn { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() } } catch {}
                     loginOn = SMAppService.mainApp.status == .enabled
                 }
-                Pill(text: "VIBE", on: m.vibe, tip: m.vibeNote.isEmpty ? "Backdrop moves with whatever your Mac is playing" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe") }
-                Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Coffee Mode: keep the Mac awake") { m.toggleNOS() }
+                Pill(text: "VIBE", on: m.vibe, tip: m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
+                Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Coffee Mode: keep the Mac awake, with its own overdrive look") { m.toggleNOS() }
                 HStack(spacing: 6) {
                     label("UNDERGLOW", 8)
                     ForEach(0..<4, id: \.self) { i in
-                        Button(action: { Ink.glow = i; UserDefaults.standard.set(i, forKey: "glow"); m.theme = i }) {
+                        Button(action: { Ink.glow = i; UserDefaults.standard.set(i, forKey: "glow"); m.theme = i; m.announce() }) {
                             Circle().fill(Ink.glows[i]).frame(width: 10, height: 10)
                                 .overlay(Circle().strokeBorder(Color.white.opacity(m.theme == i ? 0.95 : 0), lineWidth: 1.5).padding(-2.5))
                         }.buttonStyle(.plain).help(Ink.glowNames[i])
@@ -788,7 +799,7 @@ struct Panel: View {
     }
     var body: some View {
         VStack(spacing: 12) { gauges; tiles; recordsRow; usbBay; footer }
-        .id(m.theme)
+        .id(Ink.active * 2 + (m.nos ? 1 : 0))
         .padding(16).frame(width: 672)
         .background(ZStack {
             if solid { LinearGradient(colors: [Ink.bg1, Ink.bg0], startPoint: .top, endPoint: .bottom) }
@@ -952,14 +963,29 @@ final class AudioTap {
     func read() -> [Float] { lock.lock(); defer { lock.unlock() }; return levels }
 }
 
-// ---------- The backdrop: plain Core Animation layers behind the gauges, so it costs almost nothing ----------
-// With VIBE on: three silky mirrored waves whose colour drifts from the accent in the middle to magenta at the edges,
-// a soft aurora and a breathing glow behind each dial, fine sparks rising on the treble, and a double ring leaving
-// the big dial on every kick. Everything is symmetric about the centre line.
+// ---------- The backdrop: club lighting in plain Core Animation layers behind the gauges ----------
+// Each underglow is its own lighting rig, and NOS is a sixth-gear overdrive:
+//   ICE · CDJ        silky waves, a spinning jog-wheel ring round the big dial, a few beams
+//   NITROUS · LASER  a wide fan of laser beams that sweeps, with a strobe on the kick
+//   TOXIC · RADAR    a radar sweep turning behind the big dial, rings from all three dials
+//   SUNSET · SUNRISE a striped sun rising behind the big dial, warm waves, slow embers
+//   NOS              everything at once and fast, racing edge lights, pulsing even in silence
+// Everything is symmetric about the centre line and fades out completely in silence.
+struct Look { var wave: [CGFloat]; var beams: Int; var strobe: Float; var jog: Bool; var radar: Bool; var sun: Bool; var sideRings: Bool; var sparks: Float; var aurora: CGFloat; var edge: Bool; var sweep: Double }
 final class Backdrop: NSView {
-    private let grad = CAGradientLayer(), under = CAGradientLayer(), flashLayer = CALayer()
+    static let looks: [Look] = [
+        Look(wave: [0.22, 0.30, 0.44], beams: 6, strobe: 0.10, jog: true, radar: false, sun: false, sideRings: false, sparks: 1, aurora: 0.50, edge: false, sweep: 5),
+        Look(wave: [0.10, 0.14, 0.22], beams: 14, strobe: 0.30, jog: false, radar: false, sun: false, sideRings: false, sparks: 0.6, aurora: 0.40, edge: false, sweep: 2.4),
+        Look(wave: [0.00, 0.08, 0.16], beams: 0, strobe: 0.08, jog: false, radar: true, sun: false, sideRings: true, sparks: 0.4, aurora: 0.35, edge: false, sweep: 5),
+        Look(wave: [0.26, 0.36, 0.50], beams: 0, strobe: 0.00, jog: false, radar: false, sun: true, sideRings: false, sparks: 0.5, aurora: 0.60, edge: false, sweep: 5),
+        Look(wave: [0.20, 0.28, 0.42], beams: 14, strobe: 0.42, jog: true, radar: false, sun: false, sideRings: true, sparks: 1.6, aurora: 0.65, edge: true, sweep: 1.1),
+    ]
+    private var look: Look { Backdrop.looks[Ink.active] }
+    private let grad = CAGradientLayer(), under = CAGradientLayer(), flashLayer = CALayer(), strobe = CAGradientLayer()
     private let waveBox = CALayer(), waveFade = CAGradientLayer(), ringBox = CALayer(), sparks = CAEmitterLayer()
-    private var fills: [CAGradientLayer] = [], masks: [CAShapeLayer] = []          // 3 waves, then crest glow, then crest line
+    private let stage = CALayer(), mirror = CAReplicatorLayer(); private var toneFast: CGFloat = 0.3, toneSlow: CGFloat = 0.3, loudSlow: CGFloat = 0, burst: CGFloat = 0
+    private let beamBox = CALayer(), jog = CAShapeLayer(), jogMark = CAShapeLayer(), radar = CAGradientLayer(), sun = CAGradientLayer(), sunStripes = CAShapeLayer()
+    private var fills: [CAGradientLayer] = [], masks: [CAShapeLayer] = [], beams: [CAGradientLayer] = [], edges: [CAShapeLayer] = []
     private var glows: [CAGradientLayer] = [], aurora: [CAGradientLayer] = [], halos: [CALayer] = []
     private var k: CGFloat = 1, tint = -1, bassAvg: CGFloat = 0, beat: CGFloat = 0, lastRing = 0.0
     private static let points = 21
@@ -972,10 +998,18 @@ final class Backdrop: NSView {
         wantsLayer = true
         grad.colors = [NSColor(Ink.bg1).cgColor, NSColor(Ink.bg0).cgColor]; grad.startPoint = CGPoint(x: 0.5, y: 1); grad.endPoint = CGPoint(x: 0.5, y: 0)
         layer?.addSublayer(grad)
-        for _ in 0..<2 {      // aurora: two wide, very soft colour clouds, mirrored left and right
-            let a = CAGradientLayer(); a.type = .radial; a.startPoint = CGPoint(x: 0.5, y: 0.5); a.endPoint = CGPoint(x: 1, y: 1); a.opacity = 0
-            aurora.append(a); layer?.addSublayer(a)
+        func radial() -> CAGradientLayer { let g = CAGradientLayer(); g.type = .radial; g.startPoint = CGPoint(x: 0.5, y: 0.5); g.endPoint = CGPoint(x: 1, y: 1); g.opacity = 0; return g }
+        for _ in 0..<2 { let a = radial(); aurora.append(a); layer?.addSublayer(a) }       // two wide, soft colour clouds, mirrored
+        sun.startPoint = CGPoint(x: 0.5, y: 1); sun.endPoint = CGPoint(x: 0.5, y: 0); sun.mask = sunStripes; sun.opacity = 0
+        sunStripes.fillColor = NSColor.white.cgColor; stage.addSublayer(sun)
+        radar.type = .conic; radar.startPoint = CGPoint(x: 0.5, y: 0.5); radar.endPoint = CGPoint(x: 0.5, y: 0); radar.masksToBounds = true; radar.opacity = 0
+        stage.addSublayer(radar)
+        for _ in 0..<14 {      // laser beams: thin strips that start behind the big dial
+            let b = CAGradientLayer(); b.startPoint = CGPoint(x: 0, y: 0.5); b.endPoint = CGPoint(x: 1, y: 0.5); b.anchorPoint = CGPoint(x: 0, y: 0.5)
+            beams.append(b); beamBox.addSublayer(b)
         }
+        beamBox.opacity = 0; stage.addSublayer(beamBox)
+        stage.masksToBounds = true; layer?.addSublayer(stage)      // sun, radar and beams never spill below the dials
         for i in 0..<5 {
             let g = CAGradientLayer(); g.startPoint = CGPoint(x: 0, y: 0.5); g.endPoint = CGPoint(x: 1, y: 0.5); g.locations = [0, 0.25, 0.5, 0.75, 1]
             let m = CAShapeLayer(); m.lineJoin = .round; m.lineCap = .round
@@ -986,40 +1020,48 @@ final class Backdrop: NSView {
         waveFade.startPoint = CGPoint(x: 0.5, y: 1); waveFade.endPoint = CGPoint(x: 0.5, y: 0)
         waveBox.mask = waveFade; waveBox.opacity = 0
         layer?.addSublayer(waveBox)
-        // sparks: tiny soft dots that rise from the waves when there is treble
         let dot = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
             NSGradient(starting: .white, ending: NSColor.white.withAlphaComponent(0))?.draw(in: NSBezierPath(ovalIn: r), relativeCenterPosition: .zero); return true
         }
         let cell = CAEmitterCell(); cell.contents = dot.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        cell.birthRate = 34; cell.lifetime = 3.2; cell.lifetimeRange = 1.2; cell.velocity = 30; cell.velocityRange = 16
-        cell.emissionLongitude = .pi / 2; cell.emissionRange = 0.35; cell.scale = 0.22; cell.scaleRange = 0.14; cell.alphaSpeed = -0.28; cell.alphaRange = 0.3
+        cell.birthRate = 40; cell.lifetime = 3.2; cell.lifetimeRange = 1.2; cell.velocity = 34; cell.velocityRange = 18
+        cell.emissionLongitude = .pi / 2; cell.emissionRange = 0.35; cell.scale = 0.24; cell.scaleRange = 0.14; cell.alphaSpeed = -0.28; cell.alphaRange = 0.3
+        cell.name = "spark"
         sparks.emitterCells = [cell]; sparks.emitterShape = .line; sparks.birthRate = 0; sparks.renderMode = .additive
-        layer?.addSublayer(sparks)
-        for _ in 0..<3 {
-            let g = CAGradientLayer(); g.type = .radial; g.startPoint = CGPoint(x: 0.5, y: 0.5); g.endPoint = CGPoint(x: 1, y: 1); g.opacity = 0
-            glows.append(g); layer?.addSublayer(g)
-        }
+        // the sparks live on the left half only; a replicator draws their exact mirror image on the right, so they are perfectly symmetric
+        mirror.instanceCount = 2; mirror.addSublayer(sparks); layer?.addSublayer(mirror)
+        strobe.type = .radial; strobe.startPoint = CGPoint(x: 0.5, y: 0.5); strobe.endPoint = CGPoint(x: 1, y: 1); strobe.opacity = 0
+        layer?.addSublayer(strobe)
+        for _ in 0..<3 { let g = radial(); glows.append(g); layer?.addSublayer(g) }
+        for l in [jog, jogMark] { l.fillColor = nil; l.opacity = 0; layer?.addSublayer(l) }
         layer?.addSublayer(ringBox)
+        for _ in 0..<2 { let e = CAShapeLayer(); e.fillColor = nil; e.lineCap = .round; e.opacity = 0; edges.append(e); layer?.addSublayer(e) }
         under.startPoint = CGPoint(x: 0, y: 0.5); under.endPoint = CGPoint(x: 1, y: 0.5); under.opacity = 0
         layer?.addSublayer(under)
         for _ in 0..<20 { let h = CALayer(); h.opacity = 0; halos.append(h); layer?.addSublayer(h) }      // glow behind the shift lights, on the beat
-        flashLayer.backgroundColor = NSColor(Ink.nos).cgColor; flashLayer.opacity = 0; layer?.addSublayer(flashLayer)
+        flashLayer.opacity = 0; layer?.addSublayer(flashLayer)
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    /// NOS: one purple flash across the whole card.
+    /// NOS engaged: one hard flash across the whole card.
     func flash() {
-        let a = CABasicAnimation(keyPath: "opacity"); a.fromValue = 0.6; a.toValue = 0; a.duration = 0.8
-        a.timingFunction = CAMediaTimingFunction(name: .easeOut); flashLayer.add(a, forKey: "flash")
+        flashLayer.backgroundColor = NSColor(Ink.nos).cgColor
+        let a = CAKeyframeAnimation(keyPath: "opacity"); a.values = [0.75, 0.1, 0.5, 0]; a.keyTimes = [0, 0.18, 0.3, 1]; a.duration = 0.9
+        flashLayer.add(a, forKey: "flash")
     }
     private func centre(_ i: Int) -> CGPoint { CGPoint(x: dials[i].x * k, y: bounds.height - dials[i].y * k) }
-    /// The accent colour moved part of the way round the colour wheel towards magenta (the short way).
-    private func toward(_ c: NSColor, _ t: CGFloat) -> NSColor {
-        guard let rgb = c.usingColorSpace(.deviceRGB) else { return c }
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0; rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        var d = 0.86 - h; if d > 0.5 { d -= 1 }; if d < -0.5 { d += 1 }
-        let nh = h + d * t
-        return NSColor(hue: nh - floor(nh), saturation: min(1, s + 0.12), brightness: b, alpha: 1)
+    /// The accent colour moved part of the way round the colour wheel towards its partner (the short way), so the middle stays vivid.
+    private func toward(_ t: CGFloat) -> NSColor {
+        guard let a = NSColor(Ink.ice).usingColorSpace(.deviceRGB), let b = NSColor(Ink.partners[Ink.active]).usingColorSpace(.deviceRGB) else { return NSColor(Ink.ice) }
+        var d = b.hueComponent - a.hueComponent; if d > 0.5 { d -= 1 }; if d < -0.5 { d += 1 }
+        let h = a.hueComponent + d * t
+        return NSColor(hue: h - floor(h), saturation: a.saturationComponent + (b.saturationComponent - a.saturationComponent) * t,
+                       brightness: a.brightnessComponent + (b.brightnessComponent - a.brightnessComponent) * t, alpha: 1)
+    }
+    private func spin(_ l: CALayer, seconds: Double, key: String = "spin") {
+        l.removeAnimation(forKey: key)
+        let a = CABasicAnimation(keyPath: "transform.rotation.z"); a.fromValue = 0; a.toValue = -2 * Double.pi; a.duration = seconds; a.repeatCount = .infinity
+        l.add(a, forKey: key)
     }
 
     func place(scale: CGFloat) {
@@ -1027,22 +1069,53 @@ final class Backdrop: NSView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         for l in [grad, waveBox, ringBox, flashLayer] as [CALayer] { l.frame = bounds }
         for l in fills as [CALayer] + masks as [CALayer] { l.frame = bounds }
-        waveFade.frame = CGRect(x: 0, y: bounds.height - baseline * k, width: bounds.width, height: baseline * k)
-        masks[3].lineWidth = 9 * k; masks[4].lineWidth = 1.6 * k
+        let top = CGRect(x: 0, y: bounds.height - baseline * k, width: bounds.width, height: baseline * k), c = centre(0), r = dials[0].r * k
+        waveFade.frame = top
+        stage.frame = top; stage.bounds = top          // same coordinates inside as outside
+        masks[3].lineWidth = 10 * k; masks[4].lineWidth = 1.8 * k
         for (i, g) in glows.enumerated() {
-            let size = dials[i].r * 4.6 * k, c = centre(i)
-            g.frame = CGRect(x: c.x - size / 2, y: c.y - size / 2, width: size, height: size)
+            let size = dials[i].r * 5.2 * k, p = centre(i)
+            g.frame = CGRect(x: p.x - size / 2, y: p.y - size / 2, width: size, height: size)
         }
         for (i, a) in aurora.enumerated() {
-            let w = 620 * k, h = 420 * k, x = (i == 0 ? 150 : cardW - 150) * k
+            let w = 640 * k, h = 440 * k, x = (i == 0 ? 150 : cardW - 150) * k
             a.frame = CGRect(x: x - w / 2, y: bounds.height - 250 * k - h / 2, width: w, height: h)
-            // a slow, mirrored drift so the colour never sits still
             let drift = CABasicAnimation(keyPath: "transform.translation.x"); drift.fromValue = 0; drift.toValue = (i == 0 ? 46 : -46) * k
             drift.duration = 7; drift.autoreverses = true; drift.repeatCount = .infinity; drift.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             a.add(drift, forKey: "drift")
         }
-        sparks.frame = bounds; sparks.emitterPosition = CGPoint(x: bounds.midX, y: bounds.height - (baseline - 40) * k)
-        sparks.emitterSize = CGSize(width: (cardW - 120) * k, height: 1)
+        // the strobe floods the gauge zone from behind the big dial
+        strobe.frame = CGRect(x: c.x - 520 * k, y: c.y - 520 * k, width: 1040 * k, height: 1040 * k)
+        // beams share one box that pivots on the big dial's centre
+        beamBox.bounds = bounds; beamBox.anchorPoint = CGPoint(x: c.x / max(1, bounds.width), y: c.y / max(1, bounds.height)); beamBox.position = c
+        for b in beams { b.bounds = CGRect(x: 0, y: 0, width: 470 * k, height: 3.2 * k); b.position = c }
+        // jog wheel: a ring of small segments just outside the big dial, with one bright marker, turning at 33 1/3 rpm
+        let jr = CGRect(x: c.x - r - 9 * k, y: c.y - r - 9 * k, width: 2 * (r + 9 * k), height: 2 * (r + 9 * k))
+        for l in [jog, jogMark] { l.frame = jr; l.path = CGPath(ellipseIn: l.bounds.insetBy(dx: 3 * k, dy: 3 * k), transform: nil); l.lineWidth = 4 * k }
+        let around = 2 * CGFloat.pi * (r + 6 * k), seg = around / 96
+        jog.lineDashPattern = [NSNumber(value: Double(seg * 0.42)), NSNumber(value: Double(seg * 0.58))]
+        jogMark.lineDashPattern = [NSNumber(value: Double(seg * 2.4)), NSNumber(value: Double(around - seg * 2.4))]
+        spin(jog, seconds: 1.8); spin(jogMark, seconds: 1.8)
+        // radar: a sweep turning behind the big dial
+        let rr = r + 104 * k
+        radar.frame = CGRect(x: c.x - rr, y: c.y - rr, width: 2 * rr, height: 2 * rr); radar.cornerRadius = rr; spin(radar, seconds: 2.6)
+        // sun: a disc behind the big dial, cut into bands that get wider towards the bottom
+        let sr = r + 54 * k
+        sun.frame = CGRect(x: c.x - sr, y: c.y - sr, width: 2 * sr, height: 2 * sr); sun.cornerRadius = sr; sun.masksToBounds = true
+        let bands = CGMutablePath(); var y = 2 * sr, gap = 2 * k
+        while y > 0 { let h = max(4 * k, 16 * k - gap); bands.addRect(CGRect(x: 0, y: y - h, width: 2 * sr, height: h)); y -= h + gap; gap += 1.5 * k }
+        sunStripes.frame = sun.bounds; sunStripes.path = bands
+        mirror.frame = bounds; mirror.instanceTransform = CATransform3DConcat(CATransform3DMakeScale(-1, 1, 1), CATransform3DMakeTranslation(bounds.width, 0, 0))
+        sparks.frame = bounds; sparks.emitterPosition = CGPoint(x: bounds.width * 0.27, y: bounds.height - (baseline - 40) * k)
+        sparks.emitterSize = CGSize(width: bounds.width * 0.42, height: 1)
+        // racing lights along the top and bottom edges (NOS)
+        for (i, e) in edges.enumerated() {
+            e.frame = bounds; let yy = i == 0 ? bounds.height - 2 * k : 2 * k
+            let p = CGMutablePath(); p.move(to: CGPoint(x: 18 * k, y: yy)); p.addLine(to: CGPoint(x: bounds.width - 18 * k, y: yy)); e.path = p
+            e.lineWidth = 2.4 * k; e.lineDashPattern = [26, 18]
+            let run = CABasicAnimation(keyPath: "lineDashPhase"); run.fromValue = 0; run.toValue = i == 0 ? -44 : 44; run.duration = 0.22; run.repeatCount = .infinity
+            e.add(run, forKey: "run")
+        }
         under.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 3 * k)
         let hw = (cardW - 32 - 95) / 20.0 * k
         for (i, h) in halos.enumerated() {
@@ -1052,18 +1125,40 @@ final class Backdrop: NSView {
         recolor(force: true)
     }
     private func recolor(force: Bool = false) {
-        guard force || tint != Ink.glow else { return }
-        tint = Ink.glow
-        let c = NSColor(Ink.ice), c1 = toward(c, 0.5), c2 = toward(c, 0.95)
+        guard force || tint != Ink.active else { return }
+        tint = Ink.active
+        let c = NSColor(Ink.ice), c1 = toward(0.5), c2 = toward(1), L = look, white = NSColor.white
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        for (g, a) in zip(fills, [0.16, 0.22, 0.30, 0.26, 1.0] as [CGFloat]) {      // back, middle, front wave, crest glow, crest line
+        for (g, a) in zip(fills, L.wave + [0.30, 1.0]) {      // back, middle, front wave, crest glow, crest line
             g.colors = [c2, c1, c, c1, c2].map { $0.withAlphaComponent(a).cgColor }
         }
-        glows[0].colors = [c.withAlphaComponent(0.50).cgColor, c.withAlphaComponent(0).cgColor]
-        for g in glows[1...] { g.colors = [c1.withAlphaComponent(0.50).cgColor, c1.withAlphaComponent(0).cgColor] }
-        aurora.forEach { $0.colors = [c2.withAlphaComponent(0.34).cgColor, c1.withAlphaComponent(0.12).cgColor, c1.withAlphaComponent(0).cgColor] }
-        sparks.emitterCells?.first?.color = c.blended(withFraction: 0.45, of: .white)?.cgColor
-        halos.forEach { $0.backgroundColor = c.withAlphaComponent(0.55).cgColor }
+        glows[0].colors = [c.withAlphaComponent(0.85).cgColor, c.withAlphaComponent(0.25).cgColor, c.withAlphaComponent(0).cgColor]
+        for g in glows[1...] { g.colors = [c1.withAlphaComponent(0.80).cgColor, c1.withAlphaComponent(0.22).cgColor, c1.withAlphaComponent(0).cgColor] }
+        aurora.forEach { $0.colors = [c2.withAlphaComponent(L.aurora).cgColor, c1.withAlphaComponent(L.aurora * 0.35).cgColor, c1.withAlphaComponent(0).cgColor] }
+        strobe.colors = [c.blended(withFraction: 0.7, of: white)!.cgColor, c.withAlphaComponent(0.45).cgColor, c.withAlphaComponent(0).cgColor]
+        // beams: fanned evenly either side of straight up, alternating the two colours
+        let n = L.beams
+        for (i, b) in beams.enumerated() {
+            b.isHidden = i >= n; guard i < n else { continue }
+            let off = (CGFloat(i) - CGFloat(n - 1) / 2) * (CGFloat.pi * 0.80 / CGFloat(max(1, n - 1)))
+            b.setAffineTransform(CGAffineTransform(rotationAngle: .pi / 2 + off))
+            let col = (i % 2 == 0 ? c : c2).blended(withFraction: 0.25, of: white)!
+            b.colors = [col.withAlphaComponent(0.95).cgColor, col.withAlphaComponent(0.55).cgColor, col.withAlphaComponent(0).cgColor]
+        }
+        beamBox.removeAnimation(forKey: "sweep")
+        if n > 0 {
+            let sw = CABasicAnimation(keyPath: "transform.rotation.z"); sw.fromValue = -0.16; sw.toValue = 0.16; sw.duration = L.sweep
+            sw.autoreverses = true; sw.repeatCount = .infinity; sw.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut); beamBox.add(sw, forKey: "sweep")
+        }
+        jog.strokeColor = c.withAlphaComponent(0.85).cgColor; jogMark.strokeColor = white.cgColor
+        jog.isHidden = !L.jog; jogMark.isHidden = !L.jog; radar.isHidden = !L.radar; sun.isHidden = !L.sun
+        spin(jog, seconds: Ink.active == 4 ? 0.7 : 1.8); spin(jogMark, seconds: Ink.active == 4 ? 0.7 : 1.8)
+        radar.colors = [c.withAlphaComponent(0.70).cgColor, c1.withAlphaComponent(0.22).cgColor, c.withAlphaComponent(0).cgColor, c.withAlphaComponent(0).cgColor]
+        radar.locations = [0, 0.16, 0.42, 1]
+        sun.colors = [toward(1).blended(withFraction: 0.2, of: white)!.cgColor, c.cgColor, toward(0.6).cgColor]
+        edges.forEach { $0.strokeColor = c.blended(withFraction: 0.35, of: white)!.cgColor; $0.isHidden = !L.edge }
+        sparks.emitterCells?.first?.color = c.blended(withFraction: 0.45, of: white)?.cgColor
+        halos.forEach { $0.backgroundColor = c.withAlphaComponent(0.75).cgColor }
         under.colors = [c2.withAlphaComponent(0).cgColor, c1.cgColor, c.cgColor, c1.cgColor, c2.withAlphaComponent(0).cgColor]
         CATransaction.commit()
     }
@@ -1080,18 +1175,18 @@ final class Backdrop: NSView {
         if closed { p.closeSubpath() }
         return p
     }
-    /// A kick: two rings leave the rim of the big dial, the second a moment behind and fainter.
-    private func ring() {
-        let c = centre(0), r = dials[0].r * k, col = NSColor(Ink.ice)
-        for (delay, alpha, width) in [(0.0, 0.60, 2.2), (0.13, 0.30, 1.2)] as [(Double, Float, CGFloat)] {
+    /// A kick: two rings leave the rim of a dial, the second a moment behind and fainter.
+    private func ring(_ dial: Int) {
+        let c = centre(dial), r = dials[dial].r * k, col = NSColor(Ink.ice)
+        for (delay, alpha, width) in [(0.0, 0.80, 2.6), (0.13, 0.40, 1.4)] as [(Double, Float, CGFloat)] {
             let l = CAShapeLayer(); l.frame = CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
             l.path = CGPath(ellipseIn: l.bounds.insetBy(dx: 1, dy: 1), transform: nil)
             l.fillColor = nil; l.strokeColor = col.cgColor; l.lineWidth = width * k; l.opacity = 0
             ringBox.addSublayer(l)
-            let grow = CABasicAnimation(keyPath: "transform.scale"); grow.fromValue = 1.0; grow.toValue = 1.9
+            let grow = CABasicAnimation(keyPath: "transform.scale"); grow.fromValue = 1.0; grow.toValue = dial == 0 ? 1.9 : 1.6
             let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = alpha; fade.toValue = 0.0
             let thin = CABasicAnimation(keyPath: "lineWidth"); thin.fromValue = width * k; thin.toValue = 0.4 * k
-            let g = CAAnimationGroup(); g.animations = [grow, fade, thin]; g.duration = 1.1; g.beginTime = CACurrentMediaTime() + delay
+            let g = CAAnimationGroup(); g.animations = [grow, fade, thin]; g.duration = Ink.active == 4 ? 0.6 : 1.1; g.beginTime = CACurrentMediaTime() + delay
             g.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)        // fast out, long glide
             CATransaction.begin(); CATransaction.setCompletionBlock { l.removeFromSuperlayer() }
             l.add(g, forKey: "ring"); CATransaction.commit()
@@ -1099,6 +1194,7 @@ final class Backdrop: NSView {
     }
     func set(_ levels: [Float]) {
         recolor()
+        let L = look
         // 11 groups from bass to treble, mirrored so the bass sits in the middle and both edges rest on the baseline
         let n = Backdrop.points, half = n / 2, per = max(1, levels.count / (half + 1))
         var group = [CGFloat](repeating: 0, count: half + 1)
@@ -1111,29 +1207,56 @@ final class Backdrop: NSView {
         for i in 0..<3 { for j in 0..<n { heights[i][j] += (target[j] - heights[i][j]) * follow[i] } }
         let loud = CGFloat(levels.max() ?? 0), bass = CGFloat(levels.prefix(6).reduce(0, +) / 6)
         let mid = CGFloat(levels[14..<34].reduce(0, +) / 20), high = CGFloat(levels[34...].reduce(0, +)) / CGFloat(max(1, levels.count - 34))
+        let swell = heights[0].max() ?? 0, on = Float(min(1, max(swell, loud) * 5))        // everything fades out completely in silence
 
         CATransaction.begin(); CATransaction.setDisableActions(true)
         for i in 0..<3 { masks[i].path = curve(heights[i], gain: gain[i], closed: true) }
         let line = curve(heights[2], gain: gain[2], closed: false); masks[3].path = line; masks[4].path = line
-        waveBox.opacity = Float(min(1, max(heights[0].max() ?? 0, loud) * 5))        // fades out completely in silence
-        sparks.birthRate = Float(min(1, high * 1.6))
+        waveBox.opacity = on
+        CATransaction.commit()
+
+        // a kick drum = bass jumping well above its recent average
+        let now = CACurrentMediaTime(); var hit = false
+        if bass > 0.22, bass > bassAvg * 1.3 { beat = 1; if now - lastRing > 0.24 { lastRing = now; hit = true } } else { beat *= 0.80 }
+        bassAvg = bassAvg * 0.92 + bass * 0.08
+        if hit {
+            ring(0); if L.sideRings { ring(1); ring(2) }
+            if L.strobe > 0 {      // a hard, short flood of light from behind the big dial
+                let f = CABasicAnimation(keyPath: "opacity"); f.fromValue = L.strobe; f.toValue = 0; f.duration = 0.22
+                f.timingFunction = CAMediaTimingFunction(name: .easeOut); strobe.add(f, forKey: "hit")
+            }
+        }
+        // Sparks follow the music's mood, not chance. "Tone" is where the weight of the sound sits, from bass (0) to treble (1):
+        // when it climbs or the track builds, the sparks are thrown higher and keep rising; when it sinks they hang and drift down.
+        // They are released in bursts on the kick, so they move in time.
+        let total = levels.reduce(0, +), weighted = levels.enumerated().reduce(Float(0)) { $0 + Float($1.offset) * $1.element }
+        let tone = total > 0.05 ? CGFloat(weighted / total) / CGFloat(levels.count) : toneSlow
+        toneFast += (tone - toneFast) * 0.18; toneSlow += (tone - toneSlow) * 0.02; loudSlow += (loud - loudSlow) * 0.03
+        let lift = min(1, max(0, 0.45 + (toneFast - toneSlow) * 7 + (loud - loudSlow) * 0.8))
+        if hit { burst = 1 } else { burst *= 0.72 }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        sparks.birthRate = Float(min(3, 0.18 * high + 2.4 * burst)) * L.sparks * on
+        sparks.velocity = Float(0.45 + 1.9 * lift)
+        sparks.setValue((lift - 0.38) * 130 * k, forKeyPath: "emitterCells.spark.yAcceleration")
         CATransaction.commit()
 
         CATransaction.begin(); CATransaction.setAnimationDuration(0.10)
         for (i, g) in glows.enumerated() {
-            let v = i == 0 ? bass : mid * 1.2, sc = 0.72 + 0.42 * v
-            g.opacity = Float(min(1, v * 1.1)); g.transform = CATransform3DMakeScale(sc, sc, 1)
+            let v = i == 0 ? bass : mid * 1.25, sc = 0.70 + 0.50 * v
+            g.opacity = Float(min(1, v * 1.5)); g.transform = CATransform3DMakeScale(sc, sc, 1)
         }
-        aurora.forEach { $0.opacity = Float(min(1, (heights[0].max() ?? 0) * 1.4)) }      // follows the lazy back wave, so it swells and never flickers
-        under.opacity = Float(min(1, bass * 1.3))
-        // a kick drum = bass jumping well above its recent average: rings leave the big dial and the shift lights glow from the middle out
-        let now = CACurrentMediaTime()
-        if bass > 0.22, bass > bassAvg * 1.3 { beat = 1; if now - lastRing > 0.24 { lastRing = now; ring() } } else { beat *= 0.80 }
-        bassAvg = bassAvg * 0.92 + bass * 0.08
-        for (i, h) in halos.enumerated() { h.opacity = Float(max(0, min(1, beat * 1.7 - abs(CGFloat(i) - 9.5) / 9.5 * 0.7))) }
+        aurora.forEach { $0.opacity = Float(min(1, swell * 1.8)) }      // follows the lazy back wave, so it swells and never flickers
+        beamBox.opacity = L.beams > 0 ? on * Float(min(1, 0.20 + high * 1.1 + beat * 0.7)) : 0
+        let js = Float(min(1, 0.30 + bass * 0.9)) * on
+        jog.opacity = js; jogMark.opacity = on
+        radar.opacity = on * Float(min(1, 0.45 + mid * 0.9))
+        sun.opacity = on * 0.82; sun.transform = CATransform3DMakeScale(0.94 + 0.14 * bass, 0.94 + 0.14 * bass, 1)
+        edges.forEach { $0.opacity = on * Float(0.55 + 0.45 * beat) }
+        under.opacity = Float(min(1, bass * 1.5))
+        for (i, h) in halos.enumerated() { h.opacity = Float(max(0, min(1, beat * 1.9 - abs(CGFloat(i) - 9.5) / 9.5 * 0.7))) }
         CATransaction.commit()
     }
-    /// A still frame for the preview picture.
+    /// A still frame for the preview pictures.
     func demo() { for _ in 0..<40 { set((0..<AudioTap.bands).map { Float(0.25 + 0.75 * pow(1 - Double($0) / 48, 1.6)) * Float(0.75 + 0.25 * sin(Double($0) * 0.9)) }) } }
 }
 
@@ -1154,7 +1277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backdrop = Backdrop(frame: .zero)
     private let tap = AudioTap(); private var beat: Timer?
     private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?
-    private var outside: Any?; private var keys: Any?
+    private var outside: Any?; private var keys: Any?; private var lit = false
     private let sticky = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil   // testing only: stay open
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -1205,12 +1328,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastStep = step
         item.button?.image = BarIcon.image(load: load, hot: load >= 0.85)
     }
-    /// 30 times a second while the card is open: move the backdrop with the music (if VIBE is on).
+    /// 30 times a second while the card is open: move the lights with the music (VIBE) and/or the NOS overdrive pulse.
     private func pulse() {
+        var levels = [Float](repeating: 0, count: AudioTap.bands)
         if model.vibe {
             if !tap.running { let why = tap.start(); if model.vibeNote != (why ?? "") { model.vibeNote = why ?? "" }; if why != nil { model.vibe = false } }
-            backdrop.set(tap.read())
-        } else if tap.running { tap.stop(); backdrop.set([Float](repeating: 0, count: AudioTap.bands)) }
+            levels = tap.read()
+        } else if tap.running { tap.stop() }
+        if model.nos {      // NOS has its own heartbeat, so it looks urgent even with nothing playing
+            let t = CACurrentMediaTime(), kick = Float(pow(max(0, sin(2 * Double.pi * 2.3 * t)), 8))
+            for b in 0..<levels.count {
+                let synth: Float = b < 6 ? kick : (b < 30 ? 0.30 + 0.25 * Float(sin(t * 3 + Double(b) * 0.4)) : 0.25 + 0.45 * kick)
+                levels[b] = max(levels[b], synth)
+            }
+        }
+        guard model.vibe || model.nos || lit else { return }
+        lit = model.vibe || model.nos
+        backdrop.set(levels)
     }
     @objc func toggle() { card.isVisible ? close() : open() }
     private func open() {
@@ -1270,15 +1404,17 @@ if args.count >= 3, args[1] == "--render" {
         let m = Model(); m.sampleNow()
         let r = ImageRenderer(content: Panel(m: m, solid: true)); r.scale = 2
         if let img = r.nsImage { writePNG(img, args[2] + "/panel.png", px: Int(img.size.width * 2)) }
-        // the same card with the music backdrop behind it, frozen mid-song
-        let clear = ImageRenderer(content: Panel(m: m)); clear.scale = 2
-        if let top = clear.nsImage {
+        // every look, with its lighting frozen mid-song
+        for (i, name) in ["ice", "nitrous", "toxic", "sunset", "nos"].enumerated() {
+            Ink.glow = min(i, 3); Ink.nosOn = i == 4; m.theme = Ink.glow; m.nos = i == 4
+            let clear = ImageRenderer(content: Panel(m: m)); clear.scale = 2
+            guard let top = clear.nsImage else { continue }
             let b = Backdrop(frame: NSRect(origin: .zero, size: top.size)); b.layoutSubtreeIfNeeded(); b.place(scale: 1); b.demo()
             let both = NSImage(size: top.size, flipped: false) { rect in
                 guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
                 b.layer?.render(in: ctx); top.draw(in: rect); return true
             }
-            writePNG(both, args[2] + "/panel_vibe.png", px: Int(top.size.width * 2))
+            writePNG(both, args[2] + "/look_\(name).png", px: Int(top.size.width * 2))
         }
     }
     exit(0)
