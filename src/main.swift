@@ -5,6 +5,9 @@ import ServiceManagement
 import IOKit
 import IOKit.pwr_mgt
 import CoreWLAN
+import CoreAudio
+import AudioToolbox
+import Accelerate
 
 // Redline: a tuner-style gauge cluster for this Mac, living in the menu bar.
 // Everything is read locally from macOS. Nothing is sent anywhere.
@@ -65,6 +68,7 @@ final class SMC {
 // ---------- One snapshot of everything ----------
 struct USBDev: Identifiable, Equatable {
     var id: String; var name: String; var vendor: String; var speed: String; var mA: Int; var depth: Int
+    var port = 0      // which of the Mac's USB-C sockets (1-4) this hangs off; 0 = unknown
 }
 struct Snap {
     var cpu = 0.0; var cores: [Double] = Array(repeating: 0, count: ProcessInfo.processInfo.processorCount)
@@ -240,8 +244,27 @@ final class Probe {
         return (String(t[t.index(after: sp)...]).trimmingCharacters(in: .whitespaces), Double(t[..<sp].replacingOccurrences(of: ",", with: ".")) ?? 0)
     }
 
+    /// Which USB-C socket (1-4) each internal USB port belongs to, keyed by the top 12 bits of its location.
+    /// The fast (USB 3) ports carry the socket number; the slow (USB 2) ports name their fast companion.
+    func socketTable() -> [UInt32: Int] {
+        var fast: [String: Int] = [:], table: [UInt32: Int] = [:]
+        func portNo(_ d: [String: Any]) -> Int { ((d["port"] as? Data)?.first).map(Int.init) ?? 0 }
+        for d in props("AppleUSB30XHCITypeCPort") {
+            guard let n = (d["UsbCPortNumber"] as? NSNumber)?.intValue, let loc = (d["locationID"] as? NSNumber)?.uint32Value else { continue }
+            table[loc >> 20] = n
+            let path = ((d["device-properties"] as? [String: Any])?["acpi-path"] as? String) ?? ""
+            if let r = path.range(of: #"XHC\d"#, options: .regularExpression) { fast["\(path[r])-\(portNo(d))"] = n }
+        }
+        for d in props("AppleUSB20XHCITypeCPort") {
+            guard let loc = (d["locationID"] as? NSNumber)?.uint32Value, let c = (d["UsbCompanionSS"] ?? d["UsbCompanionSSP"]) as? [String: Any],
+                  let ctl = c["UsbCompanionControllerName"] as? String, let pn = (c["UsbCompanionPortNumber"] as? Data)?.first else { continue }
+            if let n = fast["\(ctl)-\(pn)"] { table[loc >> 20] = n }
+        }
+        return table
+    }
+
     /// External USB devices (built-in ones like the keyboard and camera are left out).
-    static func usb() -> [USBDev] {
+    static func usb(sockets: [UInt32: Int] = [:]) -> [USBDev] {
         guard let root = try? JSONSerialization.jsonObject(with: run("/usr/sbin/system_profiler", ["SPUSBDataType", "-json"])) as? [String: Any],
               let buses = root["SPUSBDataType"] as? [[String: Any]] else { return [] }
         var out: [USBDev] = []
@@ -254,9 +277,11 @@ final class Probe {
                 if builtIn { continue }
                 let name = (it["_name"] as? String) ?? "USB device"
                 let sp = (it["device_speed"] as? String) ?? ""
+                let hex = loc.split(separator: " ").first.map { String($0.dropFirst(2)) } ?? ""
+                let socket = UInt32(hex, radix: 16).flatMap { sockets[$0 >> 20] } ?? 0
                 out.append(USBDev(id: (it["location_id"] as? String) ?? "\(out.count)\(name)", name: name,
                                   vendor: (it["manufacturer"] as? String) ?? "", speed: speeds[sp] ?? sp.replacingOccurrences(of: "_", with: " "),
-                                  mA: Int((it["bus_power_used"] as? String) ?? "") ?? 0, depth: depth))
+                                  mA: Int((it["bus_power_used"] as? String) ?? "") ?? 0, depth: depth, port: socket))
                 walk(kids, depth + 1)
             }
         }
@@ -268,6 +293,19 @@ final class Probe {
 // ---------- The model the panel watches ----------
 final class Model: ObservableObject {
     @Published var s = Snap()
+    @Published var theme = Ink.glow
+    @Published var scale: CGFloat = 1                                   // card size; always back to 1 when it opens
+    @Published var vibe = UserDefaults.standard.bool(forKey: "vibe")    // music-reactive backdrop
+    @Published var vibeNote = ""
+    /// Where each socket (1-4) physically sits: 0 left-back, 1 left-front, 2 right-back, 3 right-front. Click a badge to correct it.
+    @Published var portMap: [Int] = (UserDefaults.standard.array(forKey: "portMap") as? [Int]).flatMap { $0.count == 4 ? $0 : nil } ?? [0, 1, 2, 3]
+    func cyclePort(_ socket: Int) {
+        guard (1...4).contains(socket) else { return }
+        let next = (portMap[socket - 1] + 1) % 4
+        if let other = portMap.firstIndex(of: next) { portMap[other] = portMap[socket - 1] }
+        portMap[socket - 1] = next
+        UserDefaults.standard.set(portMap, forKey: "portMap")
+    }
     @Published var sweep = false          // "ignition": every needle swings to the top once when the panel opens
     @Published var peakCPU = 0.0; @Published var peakGPU = 0.0; @Published var peakMem = 0.0
     @Published var hDown: [Double] = Array(repeating: 0, count: 60); @Published var hUp: [Double] = Array(repeating: 0, count: 60)
@@ -278,6 +316,7 @@ final class Model: ObservableObject {
     private let probe = Probe(); private let q = DispatchQueue(label: "redline.sample", qos: .utility)
     private var work = Snap(); private var timer: DispatchSourceTimer?; private var open = false; private var n = 0
     private var busySlow = false
+    private lazy var sockets = probe.socketTable()
 
     func start() { schedule(2.0) }
     private func schedule(_ every: Double) {
@@ -302,7 +341,7 @@ final class Model: ObservableObject {
             if n % 3 == 0 || n % 10 == 0, !busySlow {      // slower readings, off the fast path
                 busySlow = true; let doUSB = n % 10 == 0
                 DispatchQueue.global(qos: .utility).async {
-                    let h = Probe.hog(); let u = doUSB ? Probe.usb() : nil
+                    let h = Probe.hog(); let u = doUSB ? Probe.usb(sockets: self.sockets) : nil
                     self.q.async { (self.work.hog, self.work.hogPct) = h; if let u = u { self.work.usb = u }; self.busySlow = false }
                 }
             }
@@ -323,7 +362,7 @@ final class Model: ObservableObject {
     /// One real sample, used for the preview picture.
     func sampleNow() {
         probe.full(into: &work); Thread.sleep(forTimeInterval: 1.0); probe.full(into: &work)
-        (work.hog, work.hogPct) = Probe.hog(); work.usb = Probe.usb(); s = work
+        (work.hog, work.hogPct) = Probe.hog(); work.usb = Probe.usb(sockets: sockets); s = work
         peakCPU = min(1, s.cpu + 0.12); peakGPU = s.gpu; peakMem = s.mem
         hSys = (0..<60).map { (s.sysW ?? 20) * (0.8 + 0.2 * sin(Double($0) / 5)) }; hIn = hSys.map { $0 * 1.1 }
         hDown = (0..<60).map { 400_000 * (1 + sin(Double($0) / 4)) }; hUp = (0..<60).map { 60_000 * (1 + cos(Double($0) / 6)) }
@@ -334,8 +373,13 @@ final class Model: ObservableObject {
 // ---------- Look ----------
 enum Ink {
     static let bg0 = Color(red: 0.035, green: 0.043, blue: 0.055), bg1 = Color(red: 0.063, green: 0.075, blue: 0.094)
-    static let tile = Color(red: 0.082, green: 0.098, blue: 0.122), line = Color.white.opacity(0.07)
-    static let ice = Color(red: 0.25, green: 0.90, blue: 1.0), amber = Color(red: 1.0, green: 0.72, blue: 0.20)
+    static let tile = Color(red: 0.082, green: 0.098, blue: 0.122).opacity(0.90), line = Color.white.opacity(0.07)
+    static let glows: [Color] = [Color(red: 0.25, green: 0.90, blue: 1.0), Color(red: 0.72, green: 0.45, blue: 1.0),
+                                 Color(red: 0.45, green: 1.0, blue: 0.35), Color(red: 1.0, green: 0.55, blue: 0.15)]
+    static let glowNames = ["ICE", "NITROUS", "TOXIC", "SUNSET"]
+    static var glow = UserDefaults.standard.integer(forKey: "glow") % 4
+    static var ice: Color { glows[glow] }
+    static let amber = Color(red: 1.0, green: 0.72, blue: 0.20)
     static let red = Color(red: 1.0, green: 0.27, blue: 0.23), green = Color(red: 0.35, green: 0.92, blue: 0.60)
     static let dim = Color.white.opacity(0.42), mid = Color.white.opacity(0.68)
 }
@@ -348,23 +392,23 @@ func rate(_ v: Double) -> (String, String) {
     if v < 999_500_000 { return (String(format: "%.1f", v / 1_000_000), "MB/s") }
     return (String(format: "%.2f", v / 1_000_000_000), "GB/s")
 }
-let spring = Animation.interpolatingSpring(stiffness: 110, damping: 13)
+let spring = Animation.timingCurve(0.34, 1.45, 0.64, 1, duration: 0.5)
 
 // ---------- A dial ----------
-struct Dial: View {
-    var title: String; var value: Double; var peak: Double; var big: String; var unit: String; var sub: String
-    var size: CGFloat; var numbers = false; var redFrom = 0.8
-    private func deg(_ f: Double) -> Double { 150 + 240 * min(1, max(0, f)) }
+func dialDeg(_ f: Double) -> Double { 150 + 240 * min(1, max(0, f)) }
+
+/// The parts of a dial that never move: drawn once and kept as a picture.
+struct DialFace: View, Equatable {
+    var size: CGFloat; var numbers: Bool; var redFrom: Double; var hot: Bool; var theme: Int
     var body: some View {
         let r = size / 2
-        let hot = value >= redFrom
         ZStack {
             Circle().fill(RadialGradient(colors: [Ink.bg1, Ink.bg0], center: .center, startRadius: 0, endRadius: r))
-            Circle().strokeBorder(LinearGradient(colors: [Color.white.opacity(0.16), Color.white.opacity(0.02)], startPoint: .top, endPoint: .bottom), lineWidth: 1.5)
+            Circle().strokeBorder(LinearGradient(colors: hot ? [Ink.red, Ink.red.opacity(0.25)] : [Color.white.opacity(0.16), Color.white.opacity(0.02)], startPoint: .top, endPoint: .bottom), lineWidth: hot ? 2.5 : 1.5)
             Canvas { ctx, sz in
                 let c = CGPoint(x: sz.width / 2, y: sz.height / 2), rr = sz.width / 2 - 9
                 for i in 0...50 {
-                    let f = Double(i) / 50, a = deg(f) * .pi / 180, major = i % 5 == 0
+                    let f = Double(i) / 50, a = dialDeg(f) * .pi / 180, major = i % 5 == 0
                     let p1 = CGPoint(x: c.x + cos(a) * rr, y: c.y + sin(a) * rr)
                     let len: CGFloat = major ? size * 0.065 : size * 0.032
                     let p2 = CGPoint(x: c.x + cos(a) * (rr - len), y: c.y + sin(a) * (rr - len))
@@ -377,19 +421,33 @@ struct Dial: View {
                     }
                 }
             }
-            // lit arc
-            Circle().trim(from: 0, to: 240.0 / 360.0 * min(1, max(0, value)))
-                .stroke(hot ? Ink.red : Ink.ice,
-                        style: StrokeStyle(lineWidth: size * 0.022, lineCap: .round))
+        }.frame(width: size, height: size).drawingGroup()
+    }
+}
+
+struct Dial: View {
+    var title: String; var value: Double; var peak: Double; var big: String; var unit: String; var sub: String
+    var size: CGFloat; var numbers = false; var redFrom = 0.8
+    var body: some View {
+        let r = size / 2
+        let hot = value >= redFrom, col = hot ? Ink.red : Ink.ice
+        let frac = 240.0 / 360.0 * min(1, max(0, value))
+        ZStack {
+            DialFace(size: size, numbers: numbers, redFrom: redFrom, hot: hot, theme: Ink.glow).equatable()
+            // lit arc: a soft wide stroke under a sharp one gives the glow without a costly blur
+            Circle().trim(from: 0, to: frac).stroke(col.opacity(0.22), style: StrokeStyle(lineWidth: size * 0.06, lineCap: .round))
                 .rotationEffect(.degrees(150)).padding(size * 0.135)
-                .shadow(color: (hot ? Ink.red : Ink.ice).opacity(0.55), radius: 5)
+            Circle().trim(from: 0, to: frac).stroke(col, style: StrokeStyle(lineWidth: size * 0.022, lineCap: .round))
+                .rotationEffect(.degrees(150)).padding(size * 0.135)
             // peak marker
             Circle().fill(Ink.amber).frame(width: size * 0.028, height: size * 0.028).offset(x: r - size * 0.135)
-                .rotationEffect(.degrees(deg(peak))).opacity(peak > 0.005 ? 0.95 : 0)
+                .rotationEffect(.degrees(dialDeg(peak))).opacity(peak > 0.005 ? 0.95 : 0)
             // needle
-            Capsule().fill(LinearGradient(colors: [Ink.red.opacity(0.0), Ink.red, Color(red: 1, green: 0.55, blue: 0.4)], startPoint: .leading, endPoint: .trailing))
-                .frame(width: r * 0.92, height: max(2, size * 0.014)).offset(x: r * 0.30)
-                .rotationEffect(.degrees(deg(value))).shadow(color: Ink.red.opacity(0.8), radius: 4)
+            ZStack {
+                Capsule().fill(Ink.red.opacity(0.22)).frame(width: r * 0.92, height: max(6, size * 0.045)).offset(x: r * 0.30)
+                Capsule().fill(LinearGradient(colors: [Ink.red.opacity(0.0), Ink.red, Color(red: 1, green: 0.55, blue: 0.4)], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: r * 0.92, height: max(2, size * 0.014)).offset(x: r * 0.30)
+            }.rotationEffect(.degrees(dialDeg(value)))
             Circle().fill(RadialGradient(colors: [Color(white: 0.32), Color(white: 0.08)], center: .topLeading, startRadius: 0, endRadius: size * 0.09))
                 .frame(width: size * 0.115, height: size * 0.115).overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
             VStack(spacing: 0) {
@@ -401,8 +459,8 @@ struct Dial: View {
                 Text(sub).font(digits(max(8, size * 0.043), .medium)).foregroundColor(Ink.dim).padding(.top, 1).lineLimit(1)
             }.offset(y: size * 0.29)
         }
-        .frame(width: size, height: size).drawingGroup()
-        .animation(spring, value: value).animation(.easeOut(duration: 0.5), value: peak)
+        .frame(width: size, height: size)
+        .animation(spring, value: value).animation(.easeOut(duration: 0.4), value: peak)
     }
 }
 
@@ -424,7 +482,7 @@ struct CoreStrip: View {
                     Text(String(format: "%02d", i + 1)).font(digits(8, .medium)).foregroundColor(Ink.dim)
                 }.frame(maxWidth: .infinity)
             }
-        }.drawingGroup().animation(.easeOut(duration: 0.3), value: cores)
+        }.drawingGroup()      // LEDs snap, like real ones: animating 96 of them every frame cost far more CPU than the sensors
     }
 }
 
@@ -440,6 +498,28 @@ struct Spark: View {
                 Path { p in p.addLines(pts) }.stroke(color, style: StrokeStyle(lineWidth: 1.2, lineJoin: .round))
             }
         }
+    }
+}
+
+/// Top view of the laptop with its four sockets; the ones in use glow.
+struct PortMap: View {
+    var lit: Set<Int>          // positions: 0 left-back, 1 left-front, 2 right-back, 3 right-front
+    static let names = ["LEFT · BACK", "LEFT · FRONT", "RIGHT · BACK", "RIGHT · FRONT"]
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04))
+            RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 1.5).fill(Color.white.opacity(0.10)).frame(width: 52, height: 3).offset(y: -22)      // touch bar
+            RoundedRectangle(cornerRadius: 2).strokeBorder(Color.white.opacity(0.12), lineWidth: 1).frame(width: 52, height: 17).offset(y: -9)   // keys
+            RoundedRectangle(cornerRadius: 2.5).strokeBorder(Color.white.opacity(0.16), lineWidth: 1).frame(width: 28, height: 16).offset(y: 13) // trackpad
+            ForEach(0..<4, id: \.self) { i in
+                let on = lit.contains(i)
+                ZStack {
+                    Circle().fill(Ink.green.opacity(on ? 0.28 : 0)).frame(width: 13, height: 13)
+                    Capsule().fill(on ? Ink.green : Color.white.opacity(0.22)).frame(width: 4, height: 7)
+                }.offset(x: i < 2 ? -38 : 38, y: i % 2 == 0 ? -17 : -6)
+            }
+        }.frame(width: 76, height: 56).padding(.horizontal, 6)
     }
 }
 
@@ -468,9 +548,9 @@ struct Bar: View {
         GeometryReader { g in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.white.opacity(0.08))
-                Capsule().fill(color).frame(width: max(4, g.size.width * CGFloat(min(1, max(0, value)))))
+                Rectangle().fill(color).frame(width: g.size.width).scaleEffect(x: CGFloat(min(1, max(0.02, value))), y: 1, anchor: .leading)
             }
-        }.frame(height: 4).frame(maxHeight: .infinity, alignment: .bottom).animation(spring, value: value)
+        }.frame(height: 4).clipShape(Capsule()).frame(maxHeight: .infinity, alignment: .bottom).animation(spring, value: value)
     }
 }
 
@@ -479,6 +559,8 @@ struct Panel: View {
     @ObservedObject var m: Model
     @State private var loginOn = SMAppService.mainApp.status == .enabled
     var quit: () -> Void = {}
+    var resize: (Int) -> Void = { _ in }
+    var solid = false      // true only for the preview picture; live, the backdrop view sits behind
     private func v(_ x: Double) -> Double { m.sweep ? 1 : x }
     private var odo: String {
         let t = Int(m.s.uptime); return String(format: "%02dd %02dh %02dm", t / 86400, (t % 86400) / 3600, (t % 3600) / 60)
@@ -495,12 +577,35 @@ struct Panel: View {
                     Text("REDLINE").font(.system(size: 15, weight: .heavy, design: .rounded)).tracking(4).foregroundColor(.white)
                 }
                 Spacer()
+                HStack(spacing: 6) {
+                    label("GEAR", 8)
+                    Text(s.cpu < 0.05 ? "N" : "\(min(6, Int((s.cpu * 6).rounded(.up))))").font(digits(15, .heavy)).foregroundColor(s.cpu >= 0.8 ? Ink.red : Ink.ice)
+                        .frame(width: 24, height: 22).background(RoundedRectangle(cornerRadius: 5).fill(Color.black.opacity(0.5)))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Ink.line, lineWidth: 1))
+                }
+                Spacer()
                 if throttled {
                     Text("THROTTLED \(s.speedLimit)%").font(.system(size: 9.5, weight: .bold, design: .rounded)).tracking(1.2)
                         .padding(.horizontal, 7).padding(.vertical, 3).background(Capsule().fill(Ink.red)).foregroundColor(.white)
                 }
                 VStack(alignment: .trailing, spacing: 1) { label("UPTIME", 8); Text(odo).font(digits(12, .semibold)).foregroundColor(Ink.mid) }
+                HStack(spacing: 4) {
+                    ForEach([-1, 1], id: \.self) { d in
+                        Button(action: { resize(d) }) {
+                            Image(systemName: d < 0 ? "minus" : "plus").font(.system(size: 9, weight: .bold)).foregroundColor(Ink.mid)
+                                .frame(width: 20, height: 20).background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.07)))
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain).help(d < 0 ? "Smaller" : "Bigger")
+                    }
+                }.padding(.leading, 6)
             }
+            // shift lights
+            HStack(spacing: 5) {
+                ForEach(0..<20, id: \.self) { i in
+                    Capsule().fill(i >= 16 ? Ink.red : (i >= 11 ? Ink.amber : Ink.green))
+                        .opacity(v(s.cpu) * 20 > Double(i) + 0.3 ? 1 : 0.12).frame(height: 5)
+                }
+            }.drawingGroup()
             // dials
             HStack(alignment: .bottom, spacing: 14) {
                 Dial(title: "GPU LAST", value: v(s.gpu), peak: m.peakGPU, big: String(format: "%02.0f", s.gpu * 100), unit: "%", sub: s.gpuNote, size: 158)
@@ -553,18 +658,29 @@ struct Panel: View {
                     let total = s.usb.reduce(0) { $0 + $1.mA }
                     Text(String(format: "%d DEVICES · %d mA · %.1f W REQUESTED", s.usb.count, total, Double(total) * 5 / 1000)).font(digits(9.5, .medium)).foregroundColor(Ink.dim)
                 }
-                if s.usb.isEmpty {
-                    Text("Nothing plugged in").font(.system(size: 11, weight: .medium, design: .rounded)).foregroundColor(Ink.dim).frame(maxWidth: .infinity, alignment: .leading).frame(height: 18)
-                }
-                ForEach(s.usb.prefix(8)) { d in
-                    HStack(spacing: 8) {
-                        Circle().fill(Ink.green).frame(width: 6, height: 6).shadow(color: Ink.green.opacity(0.8), radius: 3).padding(.leading, CGFloat(min(d.depth, 3)) * 12)
-                        Text(d.name).font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1)
-                        Text(d.vendor.uppercased()).font(.system(size: 8.5, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
-                        Spacer(minLength: 6)
-                        Text(d.speed).font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 70, alignment: .trailing)
-                        Text("\(d.mA) mA").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 58, alignment: .trailing)
-                    }.frame(height: 18)
+                HStack(alignment: .center, spacing: 10) {
+                    PortMap(lit: Set(s.usb.filter { $0.depth == 0 && $0.port > 0 }.map { m.portMap[$0.port - 1] }))
+                    VStack(alignment: .leading, spacing: 7) {
+                        if s.usb.isEmpty {
+                            Text("Nothing plugged in").font(.system(size: 11, weight: .medium, design: .rounded)).foregroundColor(Ink.dim).frame(maxWidth: .infinity, alignment: .leading).frame(height: 18)
+                        }
+                        ForEach(s.usb.prefix(8)) { d in
+                            HStack(spacing: 8) {
+                                Circle().fill(Ink.green).frame(width: 6, height: 6).padding(.leading, CGFloat(min(d.depth, 3)) * 12)
+                                Text(d.name).font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundColor(.white).lineLimit(1).layoutPriority(1)
+                                Text(d.vendor.uppercased()).font(.system(size: 8.5, weight: .semibold, design: .rounded)).tracking(1).foregroundColor(Ink.dim).lineLimit(1)
+                                Spacer(minLength: 4)
+                                if d.depth == 0, d.port > 0 {
+                                    Button(action: { m.cyclePort(d.port) }) {
+                                        Text(PortMap.names[m.portMap[d.port - 1]]).font(.system(size: 8, weight: .bold, design: .rounded)).tracking(0.8).foregroundColor(Ink.green)
+                                            .frame(width: 82, height: 15).background(Capsule().fill(Ink.green.opacity(0.10))).contentShape(Rectangle())
+                                    }.buttonStyle(.plain).help("Socket \(d.port). Wrong side? Click to move it to the next position.")
+                                } else { Color.clear.frame(width: 82, height: 15) }
+                                Text(d.speed).font(digits(9.5, .semibold)).foregroundColor(Ink.ice).frame(width: 58, alignment: .trailing)
+                                Text("\(d.mA) mA").font(digits(9.5, .semibold)).foregroundColor(Ink.amber).frame(width: 48, alignment: .trailing)
+                            }.frame(height: 18)
+                        }
+                    }
                 }
             }
             .padding(10).background(RoundedRectangle(cornerRadius: 10).fill(Ink.tile)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line, lineWidth: 1))
@@ -580,14 +696,38 @@ struct Panel: View {
                         Text("Start at login").font(.system(size: 10.5, weight: .medium, design: .rounded)).foregroundColor(Ink.mid)
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain)
+                HStack(spacing: 6) {
+                    label("UNDERGLOW", 8)
+                    ForEach(0..<4, id: \.self) { i in
+                        Button(action: { Ink.glow = i; UserDefaults.standard.set(i, forKey: "glow"); m.theme = i }) {
+                            Circle().fill(Ink.glows[i]).frame(width: 10, height: 10)
+                                .overlay(Circle().strokeBorder(Color.white.opacity(m.theme == i ? 0.95 : 0), lineWidth: 1.5).padding(-2.5))
+                        }.buttonStyle(.plain).help(Ink.glowNames[i])
+                    }
+                }.padding(.leading, 8)
+                Button(action: { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe") }) {
+                    Text("VIBE").font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(1.5)
+                        .foregroundColor(m.vibe ? .black : Ink.mid).padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Capsule().fill(m.vibe ? Ink.ice : Color.white.opacity(0.07)))
+                }.buttonStyle(.plain).help(m.vibeNote.isEmpty ? "Backdrop moves with whatever your Mac is playing" : m.vibeNote)
                 Spacer()
-                Text("© 2026 Ali Razavi · All rights reserved").font(.system(size: 9.5, weight: .medium, design: .rounded)).foregroundColor(Ink.dim)
+                Text("© 2026 Ali Razavi").font(.system(size: 9.5, weight: .medium, design: .rounded)).foregroundColor(Ink.dim)
                 Spacer()
                 Button(action: quit) { Text("Quit").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundColor(Ink.mid) }.buttonStyle(.plain)
             }
         }
+        .id(m.theme)
         .padding(16).frame(width: 600)
-        .background(LinearGradient(colors: [Ink.bg1, Ink.bg0], startPoint: .top, endPoint: .bottom))
+        .background(ZStack {
+            if solid { LinearGradient(colors: [Ink.bg1, Ink.bg0], startPoint: .top, endPoint: .bottom) }
+            Canvas { ctx, sz in     // faint carbon weave
+                var p = Path(); var x: CGFloat = -sz.height
+                while x < sz.width { p.move(to: CGPoint(x: x, y: 0)); p.addLine(to: CGPoint(x: x + sz.height, y: sz.height)); x += 7 }
+                ctx.stroke(p, with: .color(.white.opacity(0.022)), lineWidth: 2)
+            }.drawingGroup()
+        })
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
         .environment(\.colorScheme, .dark)
     }
 }
@@ -649,19 +789,185 @@ enum BarIcon {
 }
 
 // ---------- App ----------
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    let model = Model(); var item: NSStatusItem!; let pop = NSPopover(); private var lastStep = -1; private var sig: DispatchSourceSignal?; private var host: NSHostingController<Panel>!; private var rows = -1
+// ---------- Listening to what the Mac is playing (only while VIBE is on and the card is open) ----------
+// A read-only system audio tap: the sound itself is not touched, recorded to disk or sent anywhere.
+// It is turned into 48 loudness bars and thrown away.
+final class AudioTap {
+    static let bands = 48
+    private var tapID = AudioObjectID(kAudioObjectUnknown), aggID = AudioObjectID(kAudioObjectUnknown)
+    private var procID: AudioDeviceIOProcID?
+    private let q = DispatchQueue(label: "redline.audio", qos: .userInteractive), lock = NSLock()
+    private var ring = [Float](repeating: 0, count: 1024), fill = 0
+    private var levels = [Float](repeating: 0, count: AudioTap.bands), peak: Float = 4
+    private var rate = 48_000.0
+    private let fft = vDSP_create_fftsetup(10, FFTRadix(kFFTRadix2))!
+    private let window: [Float] = { var w = [Float](repeating: 0, count: 1024); vDSP_hann_window(&w, 1024, Int32(vDSP_HANN_NORM)); return w }()
+    var running: Bool { procID != nil }
+
+    private func addr(_ sel: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    }
+    /// Returns nil when it started, otherwise a short reason.
+    func start() -> String? {
+        guard !running else { return nil }
+        var a = addr(kAudioHardwarePropertyDefaultOutputDevice); var dev = AudioObjectID(0); var sz = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &sz, &dev) == noErr else { return "No output device" }
+        a = addr(kAudioDevicePropertyDeviceUID); var uidRef: Unmanaged<CFString>?; sz = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(dev, &a, 0, nil, &sz, &uidRef) == noErr, let uid = uidRef?.takeRetainedValue() as String? else { return "No output device" }
+
+        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        desc.uuid = UUID(); desc.name = "Redline"; desc.isPrivate = true; desc.muteBehavior = .unmuted
+        guard AudioHardwareCreateProcessTap(desc, &tapID) == noErr else { tapID = AudioObjectID(kAudioObjectUnknown); return "macOS did not allow listening to system audio" }
+        a = addr(kAudioTapPropertyFormat); var fmt = AudioStreamBasicDescription(); sz = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        if AudioObjectGetPropertyData(tapID, &a, 0, nil, &sz, &fmt) == noErr, fmt.mSampleRate > 0 { rate = fmt.mSampleRate }
+        let agg: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "Redline", kAudioAggregateDeviceUIDKey: UUID().uuidString,
+            kAudioAggregateDeviceMainSubDeviceKey: uid, kAudioAggregateDeviceIsPrivateKey: true, kAudioAggregateDeviceIsStackedKey: false,
+            kAudioAggregateDeviceTapAutoStartKey: true,
+            kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: uid]],
+            kAudioAggregateDeviceTapListKey: [[kAudioSubTapDriftCompensationKey: true, kAudioSubTapUIDKey: desc.uuid.uuidString]],
+        ]
+        guard AudioHardwareCreateAggregateDevice(agg as CFDictionary, &aggID) == noErr else { stop(); return "Could not open the audio tap" }
+        let st = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, q) { [weak self] _, inData, _, _, _ in self?.feed(inData) }
+        guard st == noErr, let pid = procID, AudioDeviceStart(aggID, pid) == noErr else { stop(); return "Could not start the audio tap" }
+        return nil
+    }
+    func stop() {
+        if aggID != kAudioObjectUnknown {
+            if let p = procID { AudioDeviceStop(aggID, p); AudioDeviceDestroyIOProcID(aggID, p) }
+            AudioHardwareDestroyAggregateDevice(aggID)
+        }
+        if tapID != kAudioObjectUnknown { AudioHardwareDestroyProcessTap(tapID) }
+        procID = nil; aggID = AudioObjectID(kAudioObjectUnknown); tapID = AudioObjectID(kAudioObjectUnknown)
+        lock.lock(); levels = [Float](repeating: 0, count: AudioTap.bands); fill = 0; lock.unlock()
+    }
+    private func feed(_ inData: UnsafePointer<AudioBufferList>) {
+        let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inData))
+        guard let buf = list.first, let raw = buf.mData else { return }
+        let ch = max(1, Int(buf.mNumberChannels)), frames = Int(buf.mDataByteSize) / (4 * ch)
+        let p = raw.assumingMemoryBound(to: Float.self)
+        var i = 0
+        while i < frames {
+            let take = min(frames - i, 1024 - fill)
+            for k in 0..<take { ring[fill + k] = p[(i + k) * ch] }
+            fill += take; i += take
+            if fill == 1024 { analyse(); fill = 0 }
+        }
+    }
+    private func analyse() {
+        var x = [Float](repeating: 0, count: 1024); vDSP_vmul(ring, 1, window, 1, &x, 1, 1024)
+        var re = [Float](repeating: 0, count: 512), im = [Float](repeating: 0, count: 512), mag = [Float](repeating: 0, count: 512)
+        re.withUnsafeMutableBufferPointer { rp in im.withUnsafeMutableBufferPointer { ip in
+            var split = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
+            x.withUnsafeBufferPointer { xp in xp.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: 512) { vDSP_ctoz($0, 2, &split, 1, 512) } }
+            vDSP_fft_zrip(fft, &split, 1, 10, FFTDirection(FFT_FORWARD))
+            vDSP_zvabs(&split, 1, &mag, 1, 512)
+        } }
+        let n = AudioTap.bands, binHz = Float(rate) / 1024
+        var out = [Float](repeating: 0, count: n), top: Float = 0
+        for b in 0..<n {
+            let f0 = 40 * powf(400, Float(b) / Float(n)), f1 = 40 * powf(400, Float(b + 1) / Float(n))
+            let lo = min(511, max(1, Int(f0 / binHz))), hi = min(511, max(lo, Int(f1 / binHz)))
+            var v: Float = 0; for k in lo...hi { v = max(v, mag[k]) }
+            v *= 1 + Float(b) / 10          // music is quieter up high; lift it so the whole skyline moves
+            out[b] = v; top = max(top, v)
+        }
+        lock.lock()
+        peak = max(4, max(peak * 0.997, top))                 // follows the volume, never amplifies silence
+        for b in 0..<n { let v = min(1, out[b] / peak); levels[b] = v > levels[b] ? v : levels[b] * 0.80 + v * 0.20 }
+        lock.unlock()
+    }
+    func read() -> [Float] { lock.lock(); defer { lock.unlock() }; return levels }
+}
+
+// ---------- The backdrop: plain Core Animation layers behind the gauges, so it costs almost nothing ----------
+final class Backdrop: NSView {
+    private let grad = CAGradientLayer(), glow = CAGradientLayer(), under = CAGradientLayer()
+    private var bars: [CALayer] = []; private var k: CGFloat = 1; private var tint = -1
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        grad.colors = [NSColor(Ink.bg1).cgColor, NSColor(Ink.bg0).cgColor]; grad.startPoint = CGPoint(x: 0.5, y: 1); grad.endPoint = CGPoint(x: 0.5, y: 0)
+        layer?.addSublayer(grad)
+        glow.type = .radial; glow.startPoint = CGPoint(x: 0.5, y: 0.5); glow.endPoint = CGPoint(x: 1, y: 1); glow.opacity = 0
+        layer?.addSublayer(glow)
+        for _ in 0..<AudioTap.bands { let b = CALayer(); b.anchorPoint = CGPoint(x: 0.5, y: 0); b.cornerRadius = 1.5; bars.append(b); layer?.addSublayer(b) }
+        under.startPoint = CGPoint(x: 0, y: 0.5); under.endPoint = CGPoint(x: 1, y: 0.5); under.opacity = 0
+        layer?.addSublayer(under)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func place(scale: CGFloat) {
+        k = scale
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        grad.frame = bounds
+        let base = bounds.height - 296 * k, w = (bounds.width - 32 * k) / CGFloat(bars.count)
+        for (i, b) in bars.enumerated() {
+            b.position = CGPoint(x: 16 * k + w * (CGFloat(i) + 0.5), y: base); b.bounds = CGRect(x: 0, y: 0, width: max(2, w - 3 * k), height: b.bounds.height)
+        }
+        let g = 520 * k
+        glow.frame = CGRect(x: bounds.midX - g / 2, y: bounds.height - 181 * k - g / 2, width: g, height: g)
+        under.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 3 * k)
+        CATransaction.commit()
+        recolor(force: true)
+    }
+    private func recolor(force: Bool = false) {
+        guard force || tint != Ink.glow else { return }
+        tint = Ink.glow
+        let c = NSColor(Ink.ice)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        bars.forEach { $0.backgroundColor = c.withAlphaComponent(0.42).cgColor }
+        glow.colors = [c.withAlphaComponent(0.55).cgColor, c.withAlphaComponent(0).cgColor]
+        under.colors = [c.withAlphaComponent(0).cgColor, c.cgColor, c.withAlphaComponent(0).cgColor]
+        CATransaction.commit()
+    }
+    func set(_ levels: [Float]) {
+        recolor()
+        let maxH = 268 * k
+        let bass = CGFloat(levels.prefix(6).reduce(0, +) / 6)
+        CATransaction.begin(); CATransaction.setAnimationDuration(0.06)
+        for (b, v) in zip(bars, levels) { b.bounds.size.height = max(0, CGFloat(v) * maxH) }
+        glow.opacity = Float(min(1, bass * 1.1)); glow.transform = CATransform3DMakeScale(0.75 + 0.45 * bass, 0.75 + 0.45 * bass, 1)
+        under.opacity = Float(min(1, bass * 1.3))
+        CATransaction.commit()
+    }
+}
+
+struct Root: View {
+    @ObservedObject var m: Model; var quit: () -> Void; var resize: (Int) -> Void
+    var body: some View {
+        Panel(m: m, quit: quit, resize: resize).fixedSize()
+            .scaleEffect(m.scale, anchor: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+final class Card: NSPanel { override var canBecomeKey: Bool { true } }
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let model = Model(); var item: NSStatusItem!
+    private var card: Card!; private var host: NSHostingController<Root>!; private var measure: NSHostingController<Panel>!
+    private let backdrop = Backdrop(frame: .zero); private let tap = AudioTap(); private var beat: Timer?
+    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?
+    private var outside: Any?; private var keys: Any?; private var sizeStep = 1
+    private let sticky = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil   // testing only: stay open
 
     func applicationDidFinishLaunching(_ n: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = BarIcon.image(load: 0, hot: false)
         item.button?.target = self; item.button?.action = #selector(toggle)
         item.button?.toolTip = "Redline"
-        let host = NSHostingController(rootView: Panel(m: model, quit: { NSApp.terminate(nil) }))
+        host = NSHostingController(rootView: Root(m: model, quit: { NSApp.terminate(nil) }, resize: { [weak self] d in self?.resize(d) }))
         host.sizingOptions = []          // sized by hand in fit(): automatic sizing re-laid-out the window on every animation frame
-        self.host = host
-        pop.contentViewController = host; pop.behavior = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil ? .applicationDefined : .transient;   // sticky is for testing only pop.delegate = self
-        pop.appearance = NSAppearance(named: .darkAqua)
+        measure = NSHostingController(rootView: Panel(m: model))      // never shown; only asked how tall the card wants to be
+        card = Card(contentRect: NSRect(x: 0, y: 0, width: 600, height: 800), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        card.isOpaque = false; card.backgroundColor = .clear; card.hasShadow = true; card.level = .statusBar
+        card.isMovableByWindowBackground = true        // drag it anywhere by its background
+        card.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        card.appearance = NSAppearance(named: .darkAqua)
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 800))
+        box.wantsLayer = true; box.layer?.cornerRadius = 16; box.layer?.masksToBounds = true
+        for v in [backdrop, host.view] as [NSView] { v.frame = box.bounds; v.autoresizingMask = [.width, .height]; box.addSubview(v) }
+        card.contentView = box
         model.onTick = { [weak self] in self?.redraw($0) }
         model.start()
         // `kill -USR1 <pid>` opens or closes the panel from a script on this Mac (local signal only).
@@ -669,27 +975,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
         src.setEventHandler { [weak self] in self?.toggle() }; src.resume(); sig = src
     }
-    private func fit() {
+    private var screenFrame: NSRect { (card.screen ?? item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900) }
+    private func baseSize() -> NSSize { measure.sizeThatFits(in: NSSize(width: 600, height: 10_000)) }
+    /// Sizes: small, standard, and as big as the screen allows.
+    private func sizes() -> [CGFloat] {
+        let most = min(1.7, (screenFrame.height - 12) / max(1, baseSize().height))
+        return most > 1.08 ? [0.72, 1.0, most] : [0.72, 1.0]
+    }
+    private func resize(_ d: Int) {
+        let all = sizes(); sizeStep = min(all.count - 1, max(0, sizeStep + d))
+        withAnimation(.easeOut(duration: 0.18)) { model.scale = all[sizeStep] }
+        fit(place: false)
+    }
+    private func fit(place: Bool) {
         rows = model.s.usb.count
-        pop.contentSize = host.sizeThatFits(in: NSSize(width: 600, height: 10_000))
+        let base = baseSize(), k = model.scale, size = NSSize(width: base.width * k, height: base.height * k), old = card.frame, vis = screenFrame
+        var origin = NSPoint(x: old.midX - size.width / 2, y: old.maxY - size.height)      // keep the top edge and centre where they are
+        if place, let b = item.button?.window?.frame {
+            let v = (item.button?.window?.screen ?? NSScreen.main)?.visibleFrame ?? vis
+            origin = NSPoint(x: min(max(v.minX + 8, b.midX - size.width / 2), v.maxX - size.width - 8), y: b.minY - size.height - 6)
+        } else {
+            origin.x = min(max(vis.minX + 4, origin.x), vis.maxX - size.width - 4); origin.y = max(vis.minY + 4, min(origin.y, vis.maxY - size.height))
+        }
+        card.setFrame(NSRect(origin: origin, size: size), display: true)
+        backdrop.place(scale: k)
     }
     private func redraw(_ load: Double) {
-        if pop.isShown, model.s.usb.count != rows { fit() }
+        if card.isVisible, model.s.usb.count != rows { fit(place: false) }
         let step = Int((load * 24).rounded()) + (load >= 0.85 ? 100 : 0)
         guard step != lastStep else { return }
         lastStep = step
         item.button?.image = BarIcon.image(load: load, hot: load >= 0.85)
     }
-    @objc func toggle() {
-        if pop.isShown { pop.performClose(nil); return }
-        guard let b = item.button else { return }
-        model.setOpen(true)
-        NSApp.activate(ignoringOtherApps: true)
-        fit()
-        pop.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
-        pop.contentViewController?.view.window?.makeKey()
+    /// 30 times a second while the card is open: move the backdrop with the music (if VIBE is on).
+    private func pulse() {
+        if model.vibe {
+            if !tap.running { let why = tap.start(); if model.vibeNote != (why ?? "") { model.vibeNote = why ?? "" }; if why != nil { model.vibe = false } }
+            backdrop.set(tap.read())
+        } else if tap.running { tap.stop(); backdrop.set([Float](repeating: 0, count: AudioTap.bands)) }
     }
-    func popoverDidClose(_ n: Notification) { model.setOpen(false) }
+    @objc func toggle() { card.isVisible ? close() : open() }
+    private func open() {
+        sizeStep = 1; model.scale = 1            // always opens at the standard size
+        model.setOpen(true)
+        fit(place: true)
+        card.makeKeyAndOrderFront(nil)
+        let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.pulse() }
+        RunLoop.main.add(t, forMode: .common); beat = t
+        guard !sticky else { return }
+        // A click anywhere outside Redline closes the card; so does Esc.
+        outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in self?.close() }
+        keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if e.keyCode == 53 { self?.close(); return nil }
+            return e
+        }
+    }
+    private func close() {
+        card.orderOut(nil); model.setOpen(false)
+        beat?.invalidate(); beat = nil; tap.stop()      // never listens while the card is closed
+        if let o = outside { NSEvent.removeMonitor(o); outside = nil }
+        if let k = keys { NSEvent.removeMonitor(k); keys = nil }
+    }
+    func applicationWillTerminate(_ n: Notification) { tap.stop() }
 }
 
 @MainActor func writePNG(_ img: NSImage, _ path: String, px: Int) {
@@ -712,12 +1059,19 @@ if args.count >= 2, args[1] == "--probe" {
     print(s); usb.forEach { print($0) }
     exit(0)
 }
+if args.count >= 2, args[1] == "--audiotest" {
+    // Listens for three seconds and prints how loud the loudest bar got (0 = silence or not allowed).
+    let t = AudioTap(); if let why = t.start() { print("could not start:", why); exit(1) }
+    var top: Float = 0
+    for _ in 0..<30 { Thread.sleep(forTimeInterval: 0.1); top = max(top, t.read().max() ?? 0) }
+    t.stop(); print(String(format: "started ok, loudest bar %.2f", top)); exit(0)
+}
 if args.count >= 3, args[1] == "--render" {
     MainActor.assumeIsolated {
         writePNG(BarIcon.appIcon(), args[2] + "/icon_1024.png", px: 1024)
         writePNG(BarIcon.image(load: 0.35, hot: false, scale: 8, color: .white), args[2] + "/menubar_icon.png", px: 352)
         let m = Model(); m.sampleNow()
-        let r = ImageRenderer(content: Panel(m: m)); r.scale = 2
+        let r = ImageRenderer(content: Panel(m: m, solid: true)); r.scale = 2
         if let img = r.nsImage { writePNG(img, args[2] + "/panel.png", px: Int(img.size.width * 2)) }
     }
     exit(0)
