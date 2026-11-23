@@ -6,6 +6,15 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 
 ---
 
+## v1.6.1 · 24 Nov 2026 · Starts at log-in again
+`79adcac`
+
+### Fixed
+- **Redline did not show up after a restart.**
+  Noticed: I restarted the Mac and Redline never appeared in the menu bar.
+  Cause: Redline did start at log-in, but on purpose it then waited for the Mac to "calm down" (system load below half the cores, up to 2.5 minutes) before showing anything. Right after a restart macOS is busy loading everything, so it sat there invisible, and from the outside it looked like it never started.
+  Fix: the waiting rule is gone. Redline now starts the moment macOS opens it at log-in. Tested by relaunching: menu bar icon and Touch Bar up within 4 seconds.
+
 ## v1.6 · 23 Nov 2026 · Permissions that stick
 `dd857d4`, `34f8b78`, `5e9234d`
 
