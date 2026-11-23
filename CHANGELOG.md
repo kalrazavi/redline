@@ -7,7 +7,7 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 ---
 
 ## v1.7.1 · 24 Nov 2026 · ECO gives the Touch Bar back
-(see the commit for this entry)
+`7fd82d4`
 
 ### Changed
 - **In ECO the Touch Bar goes back to Apple's own bar**, as if Redline were switched off, instead of a dimmed Redline strip. Leaving ECO brings Redline's strip back (no rev). Tested: strip gone in ECO, back after.
