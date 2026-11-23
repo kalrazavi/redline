@@ -92,5 +92,5 @@ codesign --force --sign - "$APP"
 pkill -x Redline 2>/dev/null || true
 pkill -x Glowstrip 2>/dev/null || true
 rm -rf "/Applications/Redline.app"
-cp -R "$APP" "/Applications/Redline.app"
+cp -Rp "$APP" "/Applications/Redline.app"
 echo "installed"

@@ -511,6 +511,17 @@ enum Mac {
             AudioObjectSetPropertyData(speaker, &a, 0, nil, 4, &m) }
     }
     static var canType: Bool { CGPreflightPostEventAccess() }
+    /// Asks macOS for the Accessibility switch (needed for Esc) at most ONCE per installed copy, ever: Redline starts this part
+    /// every time the engine starts, and it must not nag each time. Only a rebuilt copy (which macOS treats as a new app) may ask again.
+    static func askOnce() {
+        guard !canType else { return }
+        let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        let stamp = ((try? FileManager.default.attributesOfItem(atPath: exe))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let key = "accessibilityAskedFor"
+        guard UserDefaults.standard.double(forKey: key) != stamp else { return }
+        UserDefaults.standard.set(stamp, forKey: key)
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+    }
     static func escape() {
         let src = CGEventSource(stateID: .hidSystemState)
         for down in [true, false] { CGEvent(keyboardEventSource: src, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap) }
@@ -773,7 +784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     static let mainID = NSTouchBarItem.Identifier("local.glowstrip.main"), trayID = NSTouchBarItem.Identifier("local.glowstrip.tray")
     let bar = NSTouchBar(), strip = StripView(frame: NSRect(x: 0, y: 0, width: 1085, height: 30))
     var tray: NSCustomTouchBarItem?
-    var shown = false, asked = false
+    var shown = false
     let pulse = Pulse()
     var vibe = UserDefaults(suiteName: "local.redline")?.object(forKey: "vibe") as? Bool ?? (UserDefaults.standard.object(forKey: "vibe") as? Bool ?? true)   // glow moves with the music; follows Redline's VIBE switch
     var glowNow: CGFloat = 1, backNow: CGFloat = 1, slow: Float = 0, lastSpark = Date(), beat: Timer?, restAfter = Date.distantPast, lastShine = Date()
@@ -791,7 +802,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
         NSTouchBarItem.addSystemTrayItem(t); DFRElementSetControlStripPresenceForIdentifier(Self.trayID, true)
         show()
         // Sending the Esc key needs the Accessibility switch; macOS shows its own request once.
-        if !Mac.canType { asked = true; _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary) }
+        Mac.askOnce()
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
         // Redline says which look is on (its underglow, VIBE and NOS switches). Local to this Mac.
         DistributedNotificationCenter.default().addObserver(forName: Notification.Name("local.redline.theme"), object: nil, queue: .main) { [weak self] n in
@@ -880,7 +891,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
             else {
                 // Without permission to press keys, step aside so Apple's own Esc is there, and ask once.
                 hide()
-                if !asked { asked = true; _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary) }
+                Mac.askOnce()
             }
         case .sleep: Mac.sleep()
         case .lock: SACLockScreenImmediate()

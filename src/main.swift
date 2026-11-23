@@ -552,6 +552,8 @@ final class Model: ObservableObject {
         let snap = work, isOpen = open, settled = n > 2
         DispatchQueue.main.async {
             self.onTick?(snap.cpu)
+            // Engine off means Apple's Touch Bar: if the Touch Bar part finished starting after the engine was switched off, stop it.
+            if !self.engine, !self.silent, !NSRunningApplication.runningApplications(withBundleIdentifier: "local.glowstrip").isEmpty { stopTouchBarCompanion() }
             // macOS takes the fans back after sleep; if what the Mac is doing no longer matches what is wanted, set it again
             if self.fanReady, !self.fanStale, snap.fanForced != self.fansWanted, -self.fanApplied.timeIntervalSinceNow > (self.fanNote.isEmpty ? 6 : 60) { self.applyFans() }
             // while the helper is missing or out of date, look again now and then, so a fresh set-up is picked up without restarting Redline
