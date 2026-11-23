@@ -7,7 +7,7 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 ---
 
 ## v1.8 · 24 Nov 2026 · NOS: full power, nothing spent on looks
-(see the commit for this entry)
+`9bd57d8`
 
 ### Changed
 - **NOS is now a real performance mode**, not just keep-awake with a light show. What I asked for: everything as fast as possible and never in a battery-saving state, but no energy wasted on making things pretty.
