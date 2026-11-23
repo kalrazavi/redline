@@ -7,7 +7,7 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 ---
 
 ## v1.7 · 24 Nov 2026 · ECO mode
-(see the commit for this entry)
+`3a32b93`
 
 ### Added
 - **ECO**, the opposite of NOS, like the eco mode in a hybrid car. Made for being in bed on battery: as little power as possible while everything still works.
