@@ -24,7 +24,7 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 
 ### Added
 - Engine on/off. Engine off gives the Mac back its defaults: Apple's Touch Bar, fans on auto, no keep-awake, no lights.
-- Push-to-start window with a rev that runs in sync on the card and the Touch Bar. AUTO or PUSH start. A delayed start at log-in that waits until the Mac has settled.
+- Push-to-start window with a rev that runs in sync on the card and the Touch Bar. AUTO or PUSH start. A delayed start at log-in that waits until the Mac has settled (removed again in v1.6.1).
 
 ### Fixed
 - **The push-to-start button did nothing.**
