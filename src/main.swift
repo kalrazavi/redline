@@ -1747,28 +1747,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sticky = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil   // testing only: stay open
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        // Started at log-in? Then wait our turn: macOS, drivers and the other apps load first, Redline comes in quietly afterwards.
-        guard let since = sessionAge(), since < 180 || ProcessInfo.processInfo.environment["REDLINE_LOGIN_TEST"] != nil else { boot(); return }
-        waitForQuiet(since: Date().addingTimeInterval(-since))
-    }
-    /// Seconds since this log-in session began (the Dock starts with it), or nil if that cannot be read.
-    private func sessionAge() -> Double? {
-        guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
-        var info = kinfo_proc(), size = MemoryLayout<kinfo_proc>.stride, mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, dock.processIdentifier]
-        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
-        let t = info.kp_proc.p_un.__p_starttime
-        return Date().timeIntervalSince1970 - (Double(t.tv_sec) + Double(t.tv_usec) / 1e6)
-    }
-    /// Checks every 5 seconds, doing nothing else: starts once the session is 45 s old and the Mac has calmed down
-    /// (1-minute load below half its cores), and in any case after 2.5 minutes.
-    private func waitForQuiet(since login: Date) {
-        let cores = Double(ProcessInfo.processInfo.activeProcessorCount)
-        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] t in
-            let age = -login.timeIntervalSinceNow
-            var load = [Double](repeating: 0, count: 3); getloadavg(&load, 3)
-            guard age >= 150 || (age >= 45 && load[0] < cores * 0.5) else { return }
-            t.invalidate(); self?.boot()
-        }
+        boot()      // start straight away, also at log-in (the old "wait until the Mac is quiet" delay kept it hidden after restarts)
     }
     private var gate: Card?
     private func boot() {
