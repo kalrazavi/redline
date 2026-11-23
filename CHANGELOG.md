@@ -1,0 +1,102 @@
+# Changelog
+
+Every version of Redline and every bug I found and had fixed. Nothing here worked perfectly out of the box: I used each build, found what was wrong, worked out what it should do instead, and had it fixed. Each fix lists what I noticed, why it happened, and what changed.
+
+Dates are when the change went live. Commit IDs link each entry to the code.
+
+---
+
+## v1.6 · 23 Nov 2026 · Permissions that stick
+`dd857d4`, `34f8b78`, `5e9234d`
+
+### Fixed
+- **The Touch Bar part asked for Accessibility on every engine start.**
+  Noticed: each time I turned the engine off and on, macOS asked for the permission again.
+  Cause: Redline starts a fresh Touch Bar process on every start, and it asked whenever it was not trusted yet.
+  Fix: it now asks at most once per installed copy. The installer keeps file dates, so a rebuild of Redline alone no longer counts as a new copy.
+- **Every rebuild lost the macOS permissions.**
+  Cause: the app was signed with a throwaway signature, so macOS treated each build as a new app.
+  Fix: the build now signs with my own local certificate when it is present, so Accessibility and audio permissions survive rebuilds.
+- **Engine off did not always stop the Touch Bar.** If the Touch Bar part started late, it could stay running after engine off. Engine off now stops it in every case.
+
+## v1.5 · 23 Nov 2026 · Push to start
+`052f840`, `c9bab17`, `ebcc553`
+
+### Added
+- Engine on/off. Engine off gives the Mac back its defaults: Apple's Touch Bar, fans on auto, no keep-awake, no lights.
+- Push-to-start window with a rev that runs in sync on the card and the Touch Bar. AUTO or PUSH start. A delayed start at log-in that waits until the Mac has settled.
+
+### Fixed
+- **The push-to-start button did nothing.**
+  Noticed: pressing the start button on the card did not start the engine, and the start window ignored the first click.
+  Cause: the card's button had no action wired to it, and the start window was not the active window, so the first click only focused it.
+  Fix: both buttons now run the same start action, and the window accepts the first click. Tested with real clicks: start window starts, header power button stops, card button starts.
+
+## v1.4 · 22 Nov 2026 · Fans, NOS and the Touch Bar inside Redline
+`e8c55fd`, `ea0cb89`, `cb6678e`, `77cbbb3`, `256004e`
+
+### Added
+- FANS switch (AUTO / MAX) with a small administrator helper, so I could uninstall Macs Fan Control. NOS forces MAX, and leaving NOS returns to my own setting.
+- Both fans shown in the thermals tile with their speed against each fan's own maximum.
+- NOS keeps the Mac awake by itself. Coffee Mode became optional and is kept in step when both are installed.
+- The Touch Bar app (Glowstrip) now lives inside Redline: one app, one installer, one README.
+
+### Fixed
+- **MAX fans failed: "could not set maximum, returned to automatic".**
+  Cause: the helper read the fan target back instantly, before the Mac's T2 chip had taken it, judged it a failure and went back to auto.
+  Fix: helper v2 waits up to 2 seconds before judging, reports the chip's answer codes, logs failures, and the app shows UPDATE when an older helper is installed. Verified: both fans reached their rated maximum (5926 / 5468 rpm) and returned to about 2200 / 2000 rpm on auto.
+- **Fans stayed at max after Redline was stopped from outside.** Quitting released them, but a system stop (SIGTERM) did not. Both now release the fans.
+- **A new fan helper needed a Redline restart.** It is now picked up without one.
+- **In NOS, the VIBE and FANS switches could still be clicked** and fight the override. They now show as on but dimmed and locked, like the colour dots.
+
+## v1.3 · 22 Nov 2026 · Every look its own style
+`bcb5b48`, `311b542`, `c244357`, `4c637df`, `8bed53b`, `c2e7f1c`, `5daad4c`
+
+### Added
+- Five club-style lighting looks, then four more (nine in total, plus NOS), each with its own light show and its own bodywork: tile shapes, glass, edges, light shapes and dial rims.
+- Bluetooth devices with battery levels in the device bay; a hub's two halves merged into one row.
+- Optional Touch Bar link and a one-step installer.
+
+### Fixed
+- **Themes only changed colour.** I wanted each look to be truly different, buttons included. Each look now has its own shapes and parts, not just a new colour.
+- **The device bay cut off my third wireless device.** Rows were too tall, so only six fit. Rows are now compact and eight fit, and the card still fits above the Dock on my screen.
+- **The colour choice could change during NOS.** NOS now locks the underglow: the dots are greyed out, the last pick is faintly ringed, and it comes back when NOS ends.
+- **USB socket positions were wrong.** The socket map did not match my MacBook. A first fix only changed the README, because the code edit had not applied; I caught that and the positions are now fixed in the code itself. Badges are plain labels instead of looking clickable.
+- **The Touch Bar link assumed every Mac has a Touch Bar.** It is now optional: Redline checks for one first and the installer skips the Touch Bar part on Macs without it.
+
+## v1.2 · 22 Nov 2026 · Cleaner card and better lights
+`127c122`, `7d2e42b`, `9a374e4`
+
+### Fixed
+- **Drag-to-resize broke and used too much CPU.** The resize grip and the wide two-column layout were removed. The card is one fixed size.
+- **The sound effects sounded cheap.** All sound effects removed.
+- **The bar equaliser looked like an old music player** and some text was squeezed. The card is wider and roomier, and the backdrop became smooth mirrored waves, glows behind the dials and rings on each beat.
+- **Text spilled outside the small dials.** Dial text is now smaller, placed higher, with shorter captions and a width limit, checked against the circle in the preview picture.
+- **The waves still looked basic.** Added colour drift, a slow aurora, sparks on high notes and double rings.
+
+## v1.1 · 22 Nov 2026 · First add-ons
+`6b7ceb1`, `470fa2c`, `bee6243`
+
+### Added
+- Drag-to-resize, charger socket shown in amber, records row, NOS switch, sounds, beat-synced lights. (Resize and sounds were later removed, see v1.2.)
+
+## v1.0 · 22 Nov 2026 · First release
+`f6b992c`, `d45d710`
+
+- Tuner-style gauge card in the menu bar: CPU, GPU and memory dials, per-core LEDs, power, thermals, network, disk, and a USB bay with a map of my sockets. Colour themes and an optional music-reactive backdrop.
+
+### Fixed before release
+- **The card used 50 to 80 percent CPU.** Animating many small pieces every frame was too heavy. LEDs now snap instead of fading, dial faces are drawn once and reused, only the needles move, and the backdrop uses lightweight layers. Result: 0 percent with the card closed, about 20 percent with it open.
+
+---
+
+## Touch Bar part (Glowstrip), before it moved into Redline
+
+Glowstrip started as its own app on 22 Nov 2026 and went through twelve versions before becoming part of Redline. The fixes that came from using it:
+
+- **Slide-to-set volume was risky.** One wrong swipe could blast the volume to max. Replaced with step buttons (one small step per tap, hold to repeat); the bar only moves relative to where it is.
+- **Not bright enough, and the look was not premium.** Raised to full brightness at rest, added neon halos, glass tiles and a pulsing backdrop.
+- **Blurred shadows on moving parts cost too much** (18 percent of a core). Replaced with a second wide stroke for the halo.
+- **The Touch Bar did not follow Redline's look**, and later followed it in the wrong way: switching VIBE off also changed the colour. Corrected so the Touch Bar always wears the colour picked in Redline, and VIBE only turns movement on or off.
+- **Icons and lettering looked the same in every look.** Each look now has its own icon set, icon style, font, weight and labels.
+- **It could start on a Mac without a Touch Bar.** It now checks first and exits cleanly.
