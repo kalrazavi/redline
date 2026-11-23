@@ -6,6 +6,32 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 
 ---
 
+## v1.8 · 24 Nov 2026 · NOS: full power, nothing spent on looks
+(see the commit for this entry)
+
+### Changed
+- **NOS is now a real performance mode**, not just keep-awake with a light show. What I asked for: everything as fast as possible and never in a battery-saving state, but no energy wasted on making things pretty.
+  - Low Power Mode off; screen and keyboard light at maximum.
+  - **Never dims.** macOS's automatic brightness, dim-on-battery and the keyboard light's idle fade kept pulling the levels down, so NOS puts them back to maximum every couple of seconds. Tested: forced the screen to 30 %, back at 100 % within seconds.
+  - App Nap off, so apps opened during NOS are never slowed down in the background.
+  - Fans at maximum and the Mac kept awake, as before.
+  - **No more light show.** The overdrive beams, strobe, sparks, heartbeat and flash cost 20-30 % CPU with the card open. NOS is now still: plain red card, red Touch Bar with no blinking or runner lights, no music listening.
+  - **The whole Mac in NOS red:** red accent and highlight colour, and my own blue Sequoia wallpaper recoloured into NOS reds (same shapes and light rays, dark reds to hot red).
+  - Everything is put back when NOS goes off, when Redline quits, or at the next start after a crash.
+- The admin helper's Low Power Mode switch is used by NOS too (to switch it off).
+
+### Fixed
+- **Switching NOS off replaced my wallpaper with a different picture.**
+  Noticed: after the first NOS test my blue wallpaper had become a forest photo.
+  Cause: my wallpaper is Apple's live Sequoia wallpaper, which macOS draws in 3D. Asked which picture is on the desktop, macOS answers with a placeholder file (the forest), and Redline put that back.
+  Fix: Redline now saves macOS's own wallpaper settings before NOS changes anything and restores exactly those afterwards. Tested: NOS on shows the red wallpaper, NOS off brings the live blue one back.
+- **The first red wallpaper looked bad.** It was a flat red gradient I had not asked for. It is now made from my own wallpaper, recoloured.
+
+### Not possible
+- Overclocking: the i7-9750H is locked. Turbo Boost is on by default, and maximum fans keep it boosting longer.
+- macOS "Reduce transparency": macOS does not let apps switch it.
+- Browser Energy Saver / Memory Saver: Chrome and Brave do not let other apps change them.
+
 ## v1.7.1 · 24 Nov 2026 · ECO gives the Touch Bar back
 `7fd82d4`
 

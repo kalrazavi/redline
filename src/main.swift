@@ -483,6 +483,66 @@ enum Eco {
     }
 }
 
+// ---------- NOS boost: everything at full power, nothing spent on looks ----------
+// While NOS is on: Low Power Mode off, screen and keyboard light at maximum, App Nap off (apps started from now on are never
+// slowed down in the background), and the Mac dressed in the NOS red (wallpaper, accent and highlight
+// colour) with nothing moving. Fans at maximum and "stay awake" are handled by NOS itself. Everything is noted first and put back
+// when NOS goes off, when Redline quits, or at the next start if Redline ever stopped during NOS.
+enum Boost {
+    static let wallpaper = NSHomeDirectory() + "/Library/Application Support/Redline/nos-wallpaper.png"
+    static let wallStore = NSHomeDirectory() + "/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
+    static let wallStoreCopy = NSHomeDirectory() + "/Library/Application Support/Redline/wallpaper-before-nos.plist"
+    /// Puts the saved wallpaper store back and has macOS reload it.
+    static func restoreWallpaper() {
+        guard let data = FileManager.default.contents(atPath: wallStoreCopy) else { return }
+        try? data.write(to: URL(fileURLWithPath: wallStore), options: .atomic)
+        _ = Probe.run("/usr/bin/killall", ["WallpaperAgent"])
+        try? FileManager.default.removeItem(atPath: wallStoreCopy)
+    }
+    static func globalValue(_ k: String) -> Any? { UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?[k] }
+    static func setGlobal(_ k: String, _ v: Any?) {
+        var d = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain) ?? [:]
+        d[k] = v; UserDefaults.standard.setPersistentDomain(d, forName: UserDefaults.globalDomain)
+    }
+    /// Tells running apps the accent colour changed, the same way System Settings does.
+    static func colourChanged() {
+        let c = DistributedNotificationCenter.default()
+        c.postNotificationName(Notification.Name("AppleColorPreferencesChangedNotification"), object: nil, userInfo: nil, deliverImmediately: true)
+        c.postNotificationName(Notification.Name("AppleAquaColorVariantChanged"), object: nil, userInfo: nil, deliverImmediately: true)
+    }
+    static func remember() {
+        var b: [String: Any] = ["brightness": Eco.brightness ?? -1, "keys": Eco.keys ?? -1, "lowPower": Eco.lowPower]
+        for k in ["AppleAccentColor", "AppleHighlightColor", "NSAppSleepDisabled"] { if let v = globalValue(k) { b[k] = v } }
+        // The wallpaper: macOS keeps the real choice (including live ones like Sequoia, which are not picture files) in its
+        // wallpaper store. A copy of that store is the only way to put back exactly what was there.
+        if FileManager.default.fileExists(atPath: wallpaper), !FileManager.default.fileExists(atPath: wallStoreCopy), let data = FileManager.default.contents(atPath: wallStore) { FileManager.default.createFile(atPath: wallStoreCopy, contents: data) }
+        UserDefaults.standard.set(b, forKey: "nosBefore")
+    }
+    static func engage() {
+        Eco.brightness = 1; Eco.keys = 1
+        setGlobal("AppleAccentColor", 0); setGlobal("AppleHighlightColor", "1.000000 0.733333 0.721569 Red"); setGlobal("NSAppSleepDisabled", true); colourChanged()
+        if FileManager.default.fileExists(atPath: wallpaper) { for sc in NSScreen.screens { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: wallpaper), for: sc, options: [:]) } }
+        DispatchQueue.global(qos: .userInitiated).async { if Eco.lowPower { Eco.setLowPower(false) } }
+    }
+    /// Never dimmed: macOS's automatic brightness, "dim on battery" and the keyboard light's idle fade all try to lower them,
+    /// so while NOS is on they are put back to maximum every couple of seconds.
+    static func holdMax() {
+        if let b = Eco.brightness, b < 0.999 { Eco.brightness = 1 }
+        if let k = Eco.keys, k < 0.999 { Eco.keys = 1 }
+    }
+    static func restore(wait: Bool = false) {
+        let d = UserDefaults.standard
+        guard let b = d.dictionary(forKey: "nosBefore") else { return }
+        d.removeObject(forKey: "nosBefore")
+        if let v = b["brightness"] as? Double, v >= 0 { Eco.brightness = Float(v) }
+        if let v = b["keys"] as? Double, v >= 0 { Eco.keys = Float(v) }
+        for k in ["AppleAccentColor", "AppleHighlightColor", "NSAppSleepDisabled"] { setGlobal(k, b[k]) }      // absent before = removed again
+        colourChanged()
+        restoreWallpaper()
+        if (b["lowPower"] as? Bool) ?? false { if wait { Eco.setLowPower(true) } else { DispatchQueue.global(qos: .userInitiated).async { Eco.setLowPower(true) } } }
+    }
+}
+
 // ---------- The model the panel watches ----------
 final class Model: ObservableObject {
     @Published var s = Snap()
@@ -557,7 +617,7 @@ final class Model: ObservableObject {
     func setNOS(_ on: Bool, tellCoffee: Bool = true) {
         guard on != nos else { return }
         if on, eco { setECO(false) }
-        if !silent { if on { awake.on() } else { awake.off() } }
+        if !silent { if on { awake.on(); Boost.remember(); Boost.engage() } else { awake.off(); Boost.restore() } }
         nos = on
         if on { onNOS?() }
         if tellCoffee, !silent { syncCoffee(on) }
@@ -640,6 +700,7 @@ final class Model: ObservableObject {
     func start() {
         schedule(2.0); applyFans()
         if !silent, UserDefaults.standard.dictionary(forKey: "ecoBefore") != nil { Eco.restore() }      // Redline stopped during ECO: undo it now
+        if !silent, UserDefaults.standard.dictionary(forKey: "nosBefore") != nil { Boost.restore() }    // same for NOS
         if !silent { UserDefaults.standard.set(false, forKey: "eco"); announce() }
     }      // engine still off: the fans go (or stay) with macOS
     private func schedule(_ every: Double) {
@@ -672,6 +733,7 @@ final class Model: ObservableObject {
         let snap = work, isOpen = open, settled = n > 2
         DispatchQueue.main.async {
             self.onTick?(snap.cpu)
+            if self.nos, !self.silent { Boost.holdMax() }      // NOS: never dimmed
             // Engine off means Apple's Touch Bar: if the Touch Bar part finished starting after the engine was switched off, stop it.
             if !self.engine || self.eco, !self.silent, !NSRunningApplication.runningApplications(withBundleIdentifier: "local.glowstrip").isEmpty { stopTouchBarCompanion() }
             // macOS takes the fans back after sleep; if what the Mac is doing no longer matches what is wanted, set it again
@@ -1055,9 +1117,9 @@ struct Panel: View {
                     }
                 }.background(Capsule().fill(Color.white.opacity(0.07)))
                 .overlay(Text("START").font(.system(size: 6.5, weight: .heavy, design: .rounded)).tracking(1.2).foregroundColor(Ink.dim).fixedSize().offset(y: -14))
-                Pill(text: "VIBE", on: (m.vibe || m.nos) && !m.eco, tip: m.eco ? "Lights are off while ECO is on. Your VIBE setting comes back when ECO goes off." : m.nos ? "NOS has taken over the lights. Your VIBE setting comes back when NOS goes off." : m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
+                Pill(text: "VIBE", on: m.vibe && !m.eco && !m.nos, tip: m.eco ? "Lights are off while ECO is on. Your VIBE setting comes back when ECO goes off." : m.nos ? "Lights are off while NOS is on: every bit of power goes to speed. Your VIBE setting comes back when NOS goes off." : m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
                     .disabled(m.nos || m.eco).opacity(m.nos || m.eco ? 0.55 : 1)       // NOS and ECO are overrides: shown as on, dimmed, not clickable
-                Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: m.engine ? "Keeps the Mac and its screen awake, fans at maximum, with its own overdrive look" : "Start the engine first") { m.toggleNOS() }
+                Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: m.engine ? "Full power: Low Power Mode off, screen and keyboard light at maximum and never dimmed, fans at maximum, Mac kept awake, App Nap off, no moving lights, the Mac in NOS red. Click again and it all comes back." : "Start the engine first") { m.toggleNOS() }
                     .disabled(!m.engine).opacity(m.engine ? 1 : 0.45)
                 Pill(text: "ECO", on: m.eco, tint: Ink.eco, width: 40,
                      tip: !m.ecoNote.isEmpty ? m.ecoNote : (m.eco ? "ECO is on: Low Power Mode, Bluetooth off, screen low, keyboard light off, fans on auto, no lights. Click to put everything back."
@@ -1892,7 +1954,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for v in [backdrop, host.view] as [NSView] { v.frame = box.bounds; v.autoresizingMask = [.width, .height]; box.addSubview(v) }
         card.contentView = box
         model.onTick = { [weak self] in self?.redraw($0) }
-        model.onNOS = { [weak self] in self?.backdrop.flash() }
+        model.onNOS = { [weak self] in self?.lit = true }      // no flash: the backdrop just goes dark and still
         model.onECO = { [weak self] on in if on { self?.lit = true } }      // lets the backdrop fade out once
         model.onRedline = { [weak self] in self?.backdrop.flash() }
         model.onPush = { [weak self] in self?.push() }
@@ -1949,20 +2011,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 30 times a second while the card is open: move the lights with the music (VIBE) and/or the NOS overdrive pulse.
     private func pulse() {
         var levels = [Float](repeating: 0, count: AudioTap.bands), wave: [Float] = []
-        let vibe = model.vibe && model.engine && !model.cranking && !model.eco      // ECO: no lights, no listening
+        let vibe = model.vibe && model.engine && !model.cranking && !model.eco && !model.nos      // ECO and NOS: no lights, no listening (NOS spends nothing on looks)
         if vibe {
             if !tap.running { let why = tap.start(); if model.vibeNote != (why ?? "") { model.vibeNote = why ?? "" }; if why != nil { model.vibe = false } }
             levels = tap.read(); wave = tap.wave()
         } else if tap.running { tap.stop() }
-        if model.nos {      // NOS has its own heartbeat, so it looks urgent even with nothing playing
+        if false {      // (NOS used to have its own animated heartbeat; NOS now spends nothing on looks), so it looks urgent even with nothing playing
             let t = CACurrentMediaTime(), kick = Float(pow(max(0, sin(2 * Double.pi * 2.3 * t)), 8))
             for b in 0..<levels.count {
                 let synth: Float = b < 6 ? kick : (b < 30 ? 0.30 + 0.25 * Float(sin(t * 3 + Double(b) * 0.4)) : 0.25 + 0.45 * kick)
                 levels[b] = max(levels[b], synth)
             }
         }
-        guard vibe || model.nos || lit else { return }
-        lit = vibe || model.nos
+        guard vibe || lit else { return }
+        lit = vibe
         backdrop.set(levels, wave: wave)
     }
     @objc func toggle() { card.isVisible ? close() : open() }
@@ -2027,7 +2089,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationWillTerminate(_ n: Notification) {
         if model.engine { UserDefaults.standard.set(model.nos, forKey: "nosLast") }       // NOS comes back with the next engine start
-        if model.eco { Eco.restore(wait: true) }       // never leave the Mac in ECO when Redline is not there to undo it
+        if model.eco { Eco.restore(wait: true) }
+        if model.nos { Boost.restore(wait: true) }       // never leave the Mac in ECO when Redline is not there to undo it
         tap.stop(); Fans.set(max: false); stopTouchBarCompanion()
     }      // never leave the fans held when Redline is not there to release them
 }

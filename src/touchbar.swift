@@ -826,13 +826,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     /// Applies the current look: colours repaint on their own; this sets what moves while no music is driving it.
     func themed() {
         (tray?.view as? NSButton)?.contentTintColor = Ink.glow
-        strip.setUrgent(Ink.theme == 8)
+        strip.setUrgent(false)      // NOS is still and red: nothing blinks
         refresh()
         if beat == nil { strip.setRunners(brightness: restRunners, speed: Ink.theme == 8 ? 2.6 : 1) }
-        if shown { strip.shine(); lastShine = Date() }
+        if shown, Ink.theme != 8 { strip.shine(); lastShine = Date() }
     }
     /// Runner lights at rest: off in the standard look, a steady edge glow for sunset, full speed for NOS.
-    var restRunners: CGFloat { Ink.theme == 8 ? 1 : (Ink.theme == 3 ? 0.55 : (Ink.theme == 7 ? 0.4 : 0)) }
+    var restRunners: CGFloat { Ink.theme == 8 ? 0 : (Ink.theme == 3 ? 0.55 : (Ink.theme == 7 ? 0.4 : 0)) }
 
     func refresh() {
         tend()
@@ -841,7 +841,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     }
     // Starts listening only while the strip is up and some app has the speakers open; lets go after 20 quiet seconds.
     func tend() {
-        let want = vibe && shown
+        let want = vibe && shown && Ink.theme != 8      // NOS: no listening, no moving glow
         if want, !pulse.running, Date() > restAfter, Pulse.somethingPlaying {
             if pulse.start() != nil { restAfter = Date().addingTimeInterval(60) } else { listenSince = Date() }
         } else if pulse.running, !want || (pulse.read().quiet > 20 && -listenSince.timeIntervalSinceNow > 20) {
@@ -851,7 +851,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
             beat = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.breathe() }
             strip.setFlowing(true)
         } else if !pulse.running, beat != nil, glowNow > 0.995 { beat?.invalidate(); beat = nil; strip.setGlow(1); strip.setBackdrop(1); backNow = 1; strip.setFlowing(false); strip.setRunners(brightness: restRunners, speed: Ink.theme == 8 ? 2.6 : 1) }
-        if shown, -lastShine.timeIntervalSinceNow > (Ink.theme == 8 ? 2.5 : 14) { lastShine = Date(); strip.shine() }
+        if shown, Ink.theme != 8, -lastShine.timeIntervalSinceNow > 14 { lastShine = Date(); strip.shine() }
     }
     // With music the glow sits low and swells on the beat; in silence it rests at full brightness.
     func breathe() {
