@@ -6,6 +6,12 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 
 ---
 
+## v1.7.1 · 24 Nov 2026 · ECO gives the Touch Bar back
+(see the commit for this entry)
+
+### Changed
+- **In ECO the Touch Bar goes back to Apple's own bar**, as if Redline were switched off, instead of a dimmed Redline strip. Leaving ECO brings Redline's strip back (no rev). Tested: strip gone in ECO, back after.
+
 ## v1.7 · 24 Nov 2026 · ECO mode
 `3a32b93`
 
@@ -16,10 +22,13 @@ Dates are when the change went live. Commit IDs link each entry to the code.
   - Screen down to 15 %, still readable. Keyboard light off.
   - Fans handed back to macOS, whatever FANS was set to.
   - Redline's lights, music listening and animations off; readings every 3 to 6 seconds instead of every 1 to 2.
-  - The Touch Bar very dim and still: no moving glow, no runner lights, no shine.
+  - The Touch Bar very dim and still: no moving glow, no runner lights, no shine (replaced in v1.7.1 by Apple's own bar).
   - Switching ECO off puts every one of these back exactly as it was. Quitting Redline in ECO does the same, and if Redline ever stops during ECO, the next start undoes it.
   - NOS and ECO switch each other off.
 - The fan helper (v3) can now also switch Low Power Mode. It needs one more run of the set-up with my Mac password (the FANS pill says FANS UPDATE until then).
+
+### Tested
+- With the updated helper: ECO on turned Bluetooth off, Low Power Mode on, fans to auto and the screen down; ECO off put all four back.
 
 ### Not done
 - **Putting browser tabs to sleep.** Chrome and Brave do not let another app send their tabs to sleep, so ECO leaves browsers alone. Their own setting does it: Settings > Performance > Energy Saver, "turn on when unplugged".

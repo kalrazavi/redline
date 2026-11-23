@@ -517,11 +517,11 @@ final class Model: ObservableObject {
         guard on != eco else { return }
         if on {
             if nos { setNOS(false) }
-            if !silent { Eco.remember(); Eco.engage() }
+            if !silent { Eco.remember(); Eco.engage(); stopTouchBarCompanion() }      // ECO: Apple's own Touch Bar, as if Redline were off
             eco = true; UserDefaults.standard.set(true, forKey: "eco")
         } else {
             eco = false; UserDefaults.standard.set(false, forKey: "eco")
-            if !silent { Eco.restore() }
+            if !silent { Eco.restore(); if engine { startTouchBarCompanion(rev: false) } }
         }
         announce(); applyFans(); schedule(shown ? 1.0 : 2.0); onECO?(on)
         if on, !silent { DispatchQueue.global(qos: .utility).async { let said = Fans.current ? "" : "Low Power Mode needs the helper update: click FANS UPDATE once."; DispatchQueue.main.async { self.ecoNote = said } } }
@@ -604,7 +604,7 @@ final class Model: ObservableObject {
         guard !engine else { return }
         engine = true
         if !silent {
-            startTouchBarCompanion(rev: rev)
+            if !eco { startTouchBarCompanion(rev: rev) }
             if UserDefaults.standard.bool(forKey: "nosLast") { setNOS(true) } else { refreshNOS() }
             announce(); applyFans()
         }
@@ -673,7 +673,7 @@ final class Model: ObservableObject {
         DispatchQueue.main.async {
             self.onTick?(snap.cpu)
             // Engine off means Apple's Touch Bar: if the Touch Bar part finished starting after the engine was switched off, stop it.
-            if !self.engine, !self.silent, !NSRunningApplication.runningApplications(withBundleIdentifier: "local.glowstrip").isEmpty { stopTouchBarCompanion() }
+            if !self.engine || self.eco, !self.silent, !NSRunningApplication.runningApplications(withBundleIdentifier: "local.glowstrip").isEmpty { stopTouchBarCompanion() }
             // macOS takes the fans back after sleep; if what the Mac is doing no longer matches what is wanted, set it again
             if self.fanReady, !self.fanStale, snap.fanForced != self.fansWanted, -self.fanApplied.timeIntervalSinceNow > (self.fanNote.isEmpty ? 6 : 60) { self.applyFans() }
             // while the helper is missing or out of date, look again now and then, so a fresh set-up is picked up without restarting Redline
@@ -1061,7 +1061,7 @@ struct Panel: View {
                     .disabled(!m.engine).opacity(m.engine ? 1 : 0.45)
                 Pill(text: "ECO", on: m.eco, tint: Ink.eco, width: 40,
                      tip: !m.ecoNote.isEmpty ? m.ecoNote : (m.eco ? "ECO is on: Low Power Mode, Bluetooth off, screen low, keyboard light off, fans on auto, no lights. Click to put everything back."
-                                                                  : "As little power as possible, for bed: Low Power Mode, Bluetooth off, screen at 15 %, keyboard light off, fans on auto, lights and Touch Bar dimmed. Click again and it all comes back.")) { m.toggleECO() }
+                                                                  : "As little power as possible, for bed: Low Power Mode, Bluetooth off, screen at 15 %, keyboard light off, fans on auto, no lights, Apple's own Touch Bar. Click again and it all comes back.")) { m.toggleECO() }
                 HStack(spacing: 6) {
                     let setUp = !m.fanReady || m.fanStale, held = m.s.fanForced
                     Pill(text: !m.fanReady ? "FANS SET UP" : (m.fanStale ? "FANS UPDATE" : (m.fansWanted ? "FANS MAX" : "FANS AUTO")), on: !setUp && m.fansWanted && held, tint: Ink.amber, width: setUp ? 86 : 72,

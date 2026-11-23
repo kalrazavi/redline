@@ -787,7 +787,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     var shown = false
     let pulse = Pulse()
     var vibe = UserDefaults(suiteName: "local.redline")?.object(forKey: "vibe") as? Bool ?? (UserDefaults.standard.object(forKey: "vibe") as? Bool ?? true)   // glow moves with the music; follows Redline's VIBE switch
-    var eco = UserDefaults(suiteName: "local.redline")?.bool(forKey: "eco") ?? false      // Redline's ECO: very dim, nothing moving
     var glowNow: CGFloat = 1, backNow: CGFloat = 1, slow: Float = 0, lastSpark = Date(), beat: Timer?, restAfter = Date.distantPast, lastShine = Date()
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -810,7 +809,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
             let u = n.userInfo ?? [:]
             let on = (u["vibe"] as? Bool) ?? false
             Ink.theme = Ink.look(glow: (u["glow"] as? Int) ?? 0, vibe: on, nos: (u["nos"] as? Bool) ?? false)
-            self?.eco = (u["eco"] as? Bool) ?? false
             // Redline's VIBE switch is also the music switch here: off = the still ice look, on = it moves with the music again.
             if let s = self, s.vibe != on { s.vibe = on; UserDefaults.standard.set(on, forKey: "vibe"); s.restAfter = .distantPast }
             self?.themed()
@@ -827,15 +825,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     var sigSource: DispatchSourceSignal?
     /// Applies the current look: colours repaint on their own; this sets what moves while no music is driving it.
     func themed() {
-        strip.alphaValue = eco ? 0.28 : 1           // ECO: the whole strip very dim
         (tray?.view as? NSButton)?.contentTintColor = Ink.glow
         strip.setUrgent(Ink.theme == 8)
         refresh()
         if beat == nil { strip.setRunners(brightness: restRunners, speed: Ink.theme == 8 ? 2.6 : 1) }
-        if shown, !eco { strip.shine(); lastShine = Date() }
+        if shown { strip.shine(); lastShine = Date() }
     }
     /// Runner lights at rest: off in the standard look, a steady edge glow for sunset, full speed for NOS.
-    var restRunners: CGFloat { eco ? 0 : Ink.theme == 8 ? 1 : (Ink.theme == 3 ? 0.55 : (Ink.theme == 7 ? 0.4 : 0)) }
+    var restRunners: CGFloat { Ink.theme == 8 ? 1 : (Ink.theme == 3 ? 0.55 : (Ink.theme == 7 ? 0.4 : 0)) }
 
     func refresh() {
         tend()
@@ -844,7 +841,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     }
     // Starts listening only while the strip is up and some app has the speakers open; lets go after 20 quiet seconds.
     func tend() {
-        let want = vibe && shown && !eco      // ECO: no listening, no moving glow
+        let want = vibe && shown
         if want, !pulse.running, Date() > restAfter, Pulse.somethingPlaying {
             if pulse.start() != nil { restAfter = Date().addingTimeInterval(60) } else { listenSince = Date() }
         } else if pulse.running, !want || (pulse.read().quiet > 20 && -listenSince.timeIntervalSinceNow > 20) {
@@ -854,7 +851,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
             beat = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.breathe() }
             strip.setFlowing(true)
         } else if !pulse.running, beat != nil, glowNow > 0.995 { beat?.invalidate(); beat = nil; strip.setGlow(1); strip.setBackdrop(1); backNow = 1; strip.setFlowing(false); strip.setRunners(brightness: restRunners, speed: Ink.theme == 8 ? 2.6 : 1) }
-        if shown, !eco, -lastShine.timeIntervalSinceNow > (Ink.theme == 8 ? 2.5 : 14) { lastShine = Date(); strip.shine() }
+        if shown, -lastShine.timeIntervalSinceNow > (Ink.theme == 8 ? 2.5 : 14) { lastShine = Date(); strip.shine() }
     }
     // With music the glow sits low and swells on the beat; in silence it rests at full brightness.
     func breathe() {
