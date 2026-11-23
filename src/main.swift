@@ -375,7 +375,7 @@ enum Fans {
         guard let a = try? FileManager.default.attributesOfItem(atPath: helper) else { return false }
         return (a[.ownerAccountID] as? NSNumber)?.intValue == 0 && ((a[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o4000 != 0
     }
-    static let version = "2"       // must match VERSION in src/fan.c; an older installed helper is asked to be updated
+    static let version = "3"       // must match VERSION in src/fan.c; an older installed helper is asked to be updated
     /// True when the installed helper is this version.
     static var current: Bool { ready && (String(data: Probe.run(helper, ["version"]), encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == version }
     /// Returns what the helper said when it could not do it (empty = fine).
@@ -386,6 +386,100 @@ enum Fans {
         guard (try? p.run()) != nil else { return "could not start the helper" }
         let d = err.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
         return (String(data: d, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// ---------- ECO: as little power as possible, everything still working ----------
+// The opposite of NOS, for reading in bed on battery. Switching ECO on remembers how things were, then:
+// macOS Low Power Mode on (through the helper), Bluetooth off, screen at 15 %, keyboard light off, fans back to macOS,
+// Redline's lights and animations off and its readings slower, the Touch Bar very dim and still.
+// Switching ECO off (or quitting Redline) puts every one of those back exactly as it was.
+enum Eco {
+    // Screen brightness and keyboard light: the same system calls the Touch Bar part uses, looked up at run time.
+    private static let display = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_NOW)
+    private static var screen: CGDirectDisplayID {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 8); var n: UInt32 = 0
+        CGGetOnlineDisplayList(8, &ids, &n)
+        return ids.prefix(Int(n)).first { CGDisplayIsBuiltin($0) != 0 } ?? CGMainDisplayID()
+    }
+    static var brightness: Float? {
+        get {
+            typealias Get = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
+            guard let f = dlsym(display, "DisplayServicesGetBrightness") else { return nil }
+            var b: Float = 0; return unsafeBitCast(f, to: Get.self)(screen, &b) == 0 ? b : nil
+        }
+        set {
+            typealias Set = @convention(c) (CGDirectDisplayID, Float) -> Int32
+            guard let v = newValue, let f = dlsym(display, "DisplayServicesSetBrightness") else { return }
+            _ = unsafeBitCast(f, to: Set.self)(screen, min(1, max(0, v)))
+        }
+    }
+    private static let keyboard: NSObject? = {
+        _ = dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_NOW)
+        return (NSClassFromString("KeyboardBrightnessClient") as? NSObject.Type)?.init()
+    }()
+    private static var keyboardID: UInt64 {
+        guard let k = keyboard, k.responds(to: NSSelectorFromString("copyKeyboardBacklightIDs")) else { return 1 }
+        return ((k.perform(NSSelectorFromString("copyKeyboardBacklightIDs"))?.takeRetainedValue() as? [NSNumber])?.first)?.uint64Value ?? 1
+    }
+    static var keys: Float? {
+        get {
+            let sel = NSSelectorFromString("brightnessForKeyboard:")
+            guard let k = keyboard, k.responds(to: sel) else { return nil }
+            typealias Get = @convention(c) (AnyObject, Selector, UInt64) -> Float
+            return unsafeBitCast(k.method(for: sel), to: Get.self)(k, sel, keyboardID)
+        }
+        set {
+            let sel = NSSelectorFromString("setBrightness:forKeyboard:")
+            guard let v = newValue, let k = keyboard, k.responds(to: sel) else { return }
+            typealias Set = @convention(c) (AnyObject, Selector, Float, UInt64) -> Bool
+            _ = unsafeBitCast(k.method(for: sel), to: Set.self)(k, sel, min(1, max(0, v)), keyboardID)
+        }
+    }
+    // Bluetooth on/off: the same call the Bluetooth menu uses. macOS asks once for the Bluetooth permission.
+    private static let bt = dlopen("/System/Library/Frameworks/IOBluetooth.framework/IOBluetooth", RTLD_NOW)
+    static var bluetooth: Bool? {
+        get {
+            typealias Get = @convention(c) () -> Int32
+            guard let f = dlsym(bt, "IOBluetoothPreferenceGetControllerPowerState") else { return nil }
+            return unsafeBitCast(f, to: Get.self)() != 0
+        }
+        set {
+            typealias Set = @convention(c) (Int32) -> Void
+            guard let v = newValue, let f = dlsym(bt, "IOBluetoothPreferenceSetControllerPowerState") else { return }
+            unsafeBitCast(f, to: Set.self)(v ? 1 : 0)
+        }
+    }
+    // macOS Low Power Mode: reading needs no rights; switching goes through the helper (installed with "Enable fan control").
+    static var lowPower: Bool { (String(data: Probe.run("/usr/bin/pmset", ["-g"]), encoding: .utf8) ?? "").range(of: #"lowpowermode\s+1"#, options: .regularExpression) != nil }
+    @discardableResult static func setLowPower(_ on: Bool) -> String {
+        guard Fans.ready, Fans.current else { return "the helper needs its update (FANS pill)" }
+        let p = Process(); p.executableURL = URL(fileURLWithPath: Fans.helper); p.arguments = ["lowpower", on ? "on" : "off"]
+        let err = Pipe(); p.standardError = err; p.standardOutput = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return "could not start the helper" }
+        let d = err.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        return p.terminationStatus == 0 ? "" : (String(data: d, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    static let screenLevel: Float = 0.15
+    /// How things were before ECO, kept in Redline's settings so even a crash during ECO can be undone at the next start.
+    static func remember() {
+        let d = UserDefaults.standard
+        d.set(["brightness": brightness ?? -1, "keys": keys ?? -1, "bluetooth": bluetooth ?? true, "lowPower": lowPower] as [String: Any], forKey: "ecoBefore")
+    }
+    static func engage() {
+        brightness = screenLevel; keys = 0; bluetooth = false
+        DispatchQueue.global(qos: .userInitiated).async { if !lowPower { setLowPower(true) } }
+    }
+    /// Puts everything back the way it was before ECO.
+    static func restore(wait: Bool = false) {
+        let d = UserDefaults.standard
+        guard let b = d.dictionary(forKey: "ecoBefore") else { return }
+        if let v = b["brightness"] as? Double, v >= 0 { brightness = Float(v) }
+        if let v = b["keys"] as? Double, v >= 0 { keys = Float(v) }
+        if (b["bluetooth"] as? Bool) ?? true { bluetooth = true }
+        let lp = (b["lowPower"] as? Bool) ?? false
+        d.removeObject(forKey: "ecoBefore")
+        if !lp { if wait { setLowPower(false) } else { DispatchQueue.global(qos: .userInitiated).async { setLowPower(false) } } }      // already on before (e.g. from AlDente): left on
     }
 }
 
@@ -401,7 +495,7 @@ final class Model: ObservableObject {
     @Published var fanStale = false          // an older helper is installed and needs the set-up run once more
     @Published var fanNote = ""              // what the helper said if it could not do it
     /// NOS always means maximum; otherwise it is your choice.
-    var fansWanted: Bool { engine && (nos || fanMax) }      // engine off = macOS runs the fans
+    var fansWanted: Bool { engine && !eco && (nos || fanMax) }      // engine off or ECO = macOS runs the fans
     private var fanApplied = Date.distantPast
     func applyFans() {
         fanApplied = Date(); let want = fansWanted
@@ -416,14 +510,33 @@ final class Model: ObservableObject {
         }
     }
     @Published var nos = false { didSet { if nos != oldValue { Ink.nosOn = nos; announce(); applyFans() } } }   // NOS: Redline is holding the Mac awake
+    @Published var eco = false          // ECO: as little power as possible (see Eco)
+    @Published var ecoNote = ""         // what did not work, if anything
+    /// Switches ECO. NOS and ECO never run together: one switches the other off. Call on the main thread.
+    func setECO(_ on: Bool) {
+        guard on != eco else { return }
+        if on {
+            if nos { setNOS(false) }
+            if !silent { Eco.remember(); Eco.engage() }
+            eco = true; UserDefaults.standard.set(true, forKey: "eco")
+        } else {
+            eco = false; UserDefaults.standard.set(false, forKey: "eco")
+            if !silent { Eco.restore() }
+        }
+        announce(); applyFans(); schedule(shown ? 1.0 : 2.0); onECO?(on)
+        if on, !silent { DispatchQueue.global(qos: .utility).async { let said = Fans.current ? "" : "Low Power Mode needs the helper update: click FANS UPDATE once."; DispatchQueue.main.async { self.ecoNote = said } } }
+        else { ecoNote = "" }
+    }
+    func toggleECO() { setECO(!eco) }
+    var onECO: ((Bool) -> Void)?
     /// Tells the Touch Bar app (Glowstrip) which look is on. Local to this Mac: a saved setting plus a notification between the two apps.
     var silent = false      // true while only drawing preview pictures
     func announce() {
         guard !silent else { return }
-        UserDefaults.standard.set(nos, forKey: "nos")
+        UserDefaults.standard.set(nos, forKey: "nos"); UserDefaults.standard.set(eco, forKey: "eco")
         if engine { UserDefaults.standard.set(nos, forKey: "nosLast") }       // what NOS was when the engine last ran; it comes back on the next start
         DistributedNotificationCenter.default().postNotificationName(Notification.Name("local.redline.theme"), object: nil,
-                                                                     userInfo: ["glow": Ink.glow, "vibe": vibe, "nos": nos], deliverImmediately: true)
+                                                                     userInfo: ["glow": Ink.glow, "vibe": vibe, "nos": nos, "eco": eco], deliverImmediately: true)
     }
     /// All-time highs: CPU temperature (°C), whole-Mac draw (W), download speed (bytes/s).
     @Published var records: [Double] = Model.savedRecords()
@@ -443,6 +556,7 @@ final class Model: ObservableObject {
     /// Switches NOS. Call on the main thread.
     func setNOS(_ on: Bool, tellCoffee: Bool = true) {
         guard on != nos else { return }
+        if on, eco { setECO(false) }
         if !silent { if on { awake.on() } else { awake.off() } }
         nos = on
         if on { onNOS?() }
@@ -519,12 +633,17 @@ final class Model: ObservableObject {
     var onTick: ((Double) -> Void)?
 
     private let probe = Probe(); private let q = DispatchQueue(label: "redline.sample", qos: .utility)
-    private var work = Snap(); private var timer: DispatchSourceTimer?; private var open = false; private var n = 0
+    private var work = Snap(); private var timer: DispatchSourceTimer?; private var open = false, shown = false; private var n = 0
     private var busySlow = false
     private lazy var sockets = probe.socketTable()
 
-    func start() { schedule(2.0); applyFans() }      // engine still off: the fans go (or stay) with macOS
+    func start() {
+        schedule(2.0); applyFans()
+        if !silent, UserDefaults.standard.dictionary(forKey: "ecoBefore") != nil { Eco.restore() }      // Redline stopped during ECO: undo it now
+        if !silent { UserDefaults.standard.set(false, forKey: "eco"); announce() }
+    }      // engine still off: the fans go (or stay) with macOS
     private func schedule(_ every: Double) {
+        let every = eco ? every * 3 : every      // ECO: readings three times slower
         timer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: q)
         t.schedule(deadline: .now() + 0.05, repeating: every, leeway: .milliseconds(every > 1 ? 300 : 30))
@@ -532,6 +651,7 @@ final class Model: ObservableObject {
         t.resume(); timer = t
     }
     func setOpen(_ o: Bool) {
+        shown = o
         q.async { self.open = o; self.n = 0; if o { self.probe.resetRates() } }
         if o { refreshNOS() }
         if o { peakCPU = 0; peakGPU = 0; peakMem = 0 }      // no rev here: the needles only rev when the engine is started with the button
@@ -609,6 +729,7 @@ enum Ink {
     /// How far the little lights lean forward, as a shear (NOS leans hard).
     static var ledLean: CGFloat { [0, -0.35, 0, 0, 0, 0, 0, 0, -0.7][active] }
     static let nos = Color(red: 1.0, green: 0.14, blue: 0.24)
+    static let eco = Color(red: 0.36, green: 0.92, blue: 0.55)          // hybrid green
     static var glow = UserDefaults.standard.integer(forKey: "glow") % 8      // the underglow you picked
     static var nosOn = false                                                 // NOS overrides it with its own look
     static var active: Int { nosOn ? 8 : glow }
@@ -934,22 +1055,25 @@ struct Panel: View {
                     }
                 }.background(Capsule().fill(Color.white.opacity(0.07)))
                 .overlay(Text("START").font(.system(size: 6.5, weight: .heavy, design: .rounded)).tracking(1.2).foregroundColor(Ink.dim).fixedSize().offset(y: -14))
-                Pill(text: "VIBE", on: m.vibe || m.nos, tip: m.nos ? "NOS has taken over the lights. Your VIBE setting comes back when NOS goes off." : m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
-                    .disabled(m.nos).opacity(m.nos ? 0.55 : 1)       // NOS is an override: shown as on, dimmed, not clickable
+                Pill(text: "VIBE", on: (m.vibe || m.nos) && !m.eco, tip: m.eco ? "Lights are off while ECO is on. Your VIBE setting comes back when ECO goes off." : m.nos ? "NOS has taken over the lights. Your VIBE setting comes back when NOS goes off." : m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
+                    .disabled(m.nos || m.eco).opacity(m.nos || m.eco ? 0.55 : 1)       // NOS and ECO are overrides: shown as on, dimmed, not clickable
                 Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: m.engine ? "Keeps the Mac and its screen awake, fans at maximum, with its own overdrive look" : "Start the engine first") { m.toggleNOS() }
                     .disabled(!m.engine).opacity(m.engine ? 1 : 0.45)
+                Pill(text: "ECO", on: m.eco, tint: Ink.eco, width: 40,
+                     tip: !m.ecoNote.isEmpty ? m.ecoNote : (m.eco ? "ECO is on: Low Power Mode, Bluetooth off, screen low, keyboard light off, fans on auto, no lights. Click to put everything back."
+                                                                  : "As little power as possible, for bed: Low Power Mode, Bluetooth off, screen at 15 %, keyboard light off, fans on auto, lights and Touch Bar dimmed. Click again and it all comes back.")) { m.toggleECO() }
                 HStack(spacing: 6) {
                     let setUp = !m.fanReady || m.fanStale, held = m.s.fanForced
                     Pill(text: !m.fanReady ? "FANS SET UP" : (m.fanStale ? "FANS UPDATE" : (m.fansWanted ? "FANS MAX" : "FANS AUTO")), on: !setUp && m.fansWanted && held, tint: Ink.amber, width: setUp ? 86 : 72,
                          tip: !m.fanReady ? "Fan control needs a one-time set-up with your Mac password. Click to start it."
                               : m.fanStale ? "The fan helper was improved. Click to install the new one (asks for your Mac password once more)."
                               : !m.fanNote.isEmpty ? "The Mac did not accept it: \(m.fanNote)"
-                              : (m.nos ? "Held at maximum while NOS is on" : (m.fanMax ? "Both fans at their rated maximum (\(m.s.fanTops.map { String(format: "%.0f", $0) }.joined(separator: " and ")) rpm). Click for automatic." : "macOS controls the fans. Click for maximum."))) {
+                              : (m.eco ? "macOS runs the fans while ECO is on" : m.nos ? "Held at maximum while NOS is on" : (m.fanMax ? "Both fans at their rated maximum (\(m.s.fanTops.map { String(format: "%.0f", $0) }.joined(separator: " and ")) rpm). Click for automatic." : "macOS controls the fans. Click for maximum."))) {
                         if setUp {
                             if Fans.current { m.applyFans() }
                             else if let r = Bundle.main.resourcePath { NSWorkspace.shared.open(URL(fileURLWithPath: r + "/Enable fan control.command")) }
                         } else { m.fanMax.toggle(); UserDefaults.standard.set(m.fanMax, forKey: "fanMax"); m.applyFans() }
-                    }.disabled((m.nos || !m.engine) && !setUp).opacity((m.nos || !m.engine) && !setUp ? 0.55 : 1)
+                    }.disabled((m.nos || m.eco || !m.engine) && !setUp).opacity((m.nos || m.eco || !m.engine) && !setUp ? 0.55 : 1)
                 }
                 HStack(spacing: 4) {
                     ForEach(0..<8, id: \.self) { i in
@@ -1742,7 +1866,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var card: Card!; private var host: NSHostingController<Root>!; private var measure: NSHostingController<Panel>!
     private let backdrop = Backdrop(frame: .zero)
     private let tap = AudioTap(); private var beat: Timer?
-    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?; private var termSig: DispatchSourceSignal?; private var nosSig: DispatchSourceSignal?; private var hupSig: DispatchSourceSignal?
+    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?; private var termSig: DispatchSourceSignal?; private var nosSig: DispatchSourceSignal?; private var hupSig: DispatchSourceSignal?; private var ecoSig: DispatchSourceSignal?
     private var outside: Any?; private var keys: Any?; private var lit = false
     private let sticky = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil   // testing only: stay open
 
@@ -1769,6 +1893,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         card.contentView = box
         model.onTick = { [weak self] in self?.redraw($0) }
         model.onNOS = { [weak self] in self?.backdrop.flash() }
+        model.onECO = { [weak self] on in if on { self?.lit = true } }      // lets the backdrop fade out once
         model.onRedline = { [weak self] in self?.backdrop.flash() }
         model.onPush = { [weak self] in self?.push() }
         model.onEngine = { [weak self] on in if !on { self?.lit = true } }       // lets the backdrop fade out once
@@ -1785,6 +1910,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signal(SIGUSR2, SIG_IGN)
         let two = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
         two.setEventHandler { [weak self] in if self?.model.engine == true { self?.model.toggleNOS() } }; two.resume(); nosSig = two
+        // `kill -INFO <pid>` flips ECO (testing hook, local signal only).
+        signal(SIGINFO, SIG_IGN)
+        let info = DispatchSource.makeSignalSource(signal: SIGINFO, queue: .main)
+        info.setEventHandler { [weak self] in self?.model.toggleECO() }; info.resume(); ecoSig = info
         // `kill -HUP <pid>` presses the start button, or switches the engine off when it runs (testing hook, local signal only).
         signal(SIGHUP, SIG_IGN)
         let hup = DispatchSource.makeSignalSource(signal: SIGHUP, queue: .main)
@@ -1820,7 +1949,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 30 times a second while the card is open: move the lights with the music (VIBE) and/or the NOS overdrive pulse.
     private func pulse() {
         var levels = [Float](repeating: 0, count: AudioTap.bands), wave: [Float] = []
-        let vibe = model.vibe && model.engine && !model.cranking
+        let vibe = model.vibe && model.engine && !model.cranking && !model.eco      // ECO: no lights, no listening
         if vibe {
             if !tap.running { let why = tap.start(); if model.vibeNote != (why ?? "") { model.vibeNote = why ?? "" }; if why != nil { model.vibe = false } }
             levels = tap.read(); wave = tap.wave()
@@ -1898,6 +2027,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationWillTerminate(_ n: Notification) {
         if model.engine { UserDefaults.standard.set(model.nos, forKey: "nosLast") }       // NOS comes back with the next engine start
+        if model.eco { Eco.restore(wait: true) }       // never leave the Mac in ECO when Redline is not there to undo it
         tap.stop(); Fans.set(max: false); stopTouchBarCompanion()
     }      // never leave the fans held when Redline is not there to release them
 }

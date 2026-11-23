@@ -6,6 +6,24 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 
 ---
 
+## v1.7 · 24 Nov 2026 · ECO mode
+(see the commit for this entry)
+
+### Added
+- **ECO**, the opposite of NOS, like the eco mode in a hybrid car. Made for being in bed on battery: as little power as possible while everything still works.
+  - macOS Low Power Mode on, the same switch my battery app (AlDente) flips. Already on? It stays on afterwards too.
+  - Bluetooth off.
+  - Screen down to 15 %, still readable. Keyboard light off.
+  - Fans handed back to macOS, whatever FANS was set to.
+  - Redline's lights, music listening and animations off; readings every 3 to 6 seconds instead of every 1 to 2.
+  - The Touch Bar very dim and still: no moving glow, no runner lights, no shine.
+  - Switching ECO off puts every one of these back exactly as it was. Quitting Redline in ECO does the same, and if Redline ever stops during ECO, the next start undoes it.
+  - NOS and ECO switch each other off.
+- The fan helper (v3) can now also switch Low Power Mode. It needs one more run of the set-up with my Mac password (the FANS pill says FANS UPDATE until then).
+
+### Not done
+- **Putting browser tabs to sleep.** Chrome and Brave do not let another app send their tabs to sleep, so ECO leaves browsers alone. Their own setting does it: Settings > Performance > Energy Saver, "turn on when unplugged".
+
 ## v1.6.1 · 24 Nov 2026 · Starts at log-in again
 `79adcac`
 

@@ -1,15 +1,18 @@
 // Copyright (c) 2026 Ali Razavi. All rights reserved. Owned and controlled solely by Ali Razavi: no licence check, no remote control, no backdoor. Terms: see the LICENSE file.
 //
 // redline-fan: the one part of Redline that runs with administrator rights, so it is kept as small as possible.
-// It understands exactly three words and nothing else:
-//   status  print each fan's mode, speed and rated maximum (works without administrator rights)
-//   max     run every fan at its own rated maximum, the top speed Apple built it for
-//   auto    hand the fans back to macOS
+// It understands exactly these words and nothing else:
+//   status        print each fan's mode, speed and rated maximum (works without administrator rights)
+//   max           run every fan at its own rated maximum, the top speed Apple built it for
+//   auto          hand the fans back to macOS
+//   lowpower on   switch on macOS Low Power Mode (ECO), the same switch as in System Settings > Battery
+//   lowpower off  switch it off again
 // It never sets a speed below what macOS would choose, reads no files, takes no other input and talks to nothing but the Mac's sensor chip.
 #include <IOKit/IOKitLib.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 typedef struct { char major, minor, build, reserved[1]; UInt16 release; } vers_t;
 typedef struct { UInt16 version, length; UInt32 cpuPLimit, gpuPLimit, memPLimit; } plimit_t;
@@ -18,7 +21,7 @@ typedef struct { UInt32 key; vers_t vers; plimit_t pLimitData; info_t keyInfo; c
 
 static io_connect_t conn;
 static int lastKr = 0, lastResult = 0;      // how the chip answered the most recent request, for honest error messages
-#define VERSION 2
+#define VERSION 3
 static UInt32 code(const char *s) { return ((UInt32)s[0] << 24) | ((UInt32)s[1] << 16) | ((UInt32)s[2] << 8) | (UInt32)s[3]; }
 static int call(smc_t *in, smc_t *out) {
     size_t n = sizeof(smc_t); memset(out, 0, sizeof(smc_t));
@@ -64,7 +67,16 @@ static int writeNumber(const char *key, double v) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "version")) { printf("%d\n", VERSION); return 0; }
-    if (argc != 2 || (strcmp(argv[1], "status") && strcmp(argv[1], "max") && strcmp(argv[1], "auto"))) { fprintf(stderr, "usage: redline-fan status|max|auto\n"); return 2; }
+    // Low Power Mode: runs Apple's own pmset with fixed words; nothing from the caller is passed on except on/off.
+    if (argc == 3 && !strcmp(argv[1], "lowpower") && (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
+        if (geteuid() != 0) { fprintf(stderr, "needs administrator rights: run 'Enable fan control' once\n"); return 3; }
+        setgid(0); setuid(0);
+        char *const env[] = { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", NULL };
+        char *const args[] = { "pmset", "-a", "lowpowermode", !strcmp(argv[2], "on") ? "1" : "0", NULL };
+        execve("/usr/bin/pmset", args, env);
+        fprintf(stderr, "could not run pmset\n"); return 1;
+    }
+    if (argc != 2 || (strcmp(argv[1], "status") && strcmp(argv[1], "max") && strcmp(argv[1], "auto"))) { fprintf(stderr, "usage: redline-fan status|max|auto|lowpower on|off\n"); return 2; }
     int want = !strcmp(argv[1], "max") ? 1 : (!strcmp(argv[1], "auto") ? 0 : -1);
     io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"));
     if (!svc || IOServiceOpen(svc, mach_task_self(), 0, &conn) != kIOReturnSuccess) { fprintf(stderr, "cannot reach the sensor chip\n"); return 1; }

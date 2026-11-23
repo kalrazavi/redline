@@ -22,7 +22,7 @@ cat > "$APP/Contents/Resources/Enable fan control.command" <<'F'
 H="$(dirname "$0")/redline-fan"
 echo "Redline fan control"
 echo "This copies one small helper to /Library/Application Support/Redline and lets it act for the system."
-echo "The helper can do two things only: run both fans at their rated maximum, or hand them back to macOS."
+echo "The helper can do only this: run both fans at their rated maximum or hand them back to macOS, and switch macOS Low Power Mode on or off (ECO)."
 echo "macOS will now ask for your Mac password (it is not shown while you type)."
 sudo mkdir -p "/Library/Application Support/Redline" && sudo install -o root -g wheel -m 4755 "$H" "/Library/Application Support/Redline/redline-fan" \
   && echo "Done. The FANS switch in Redline now works. You can close this window." || echo "Not installed."
@@ -82,6 +82,7 @@ cat > "$APP/Contents/Info.plist" <<'P'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>NSHumanReadableCopyright</key><string>Copyright (c) 2026 Ali Razavi. All rights reserved.</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>ECO mode switches Bluetooth off to save battery and back on when you leave ECO. Redline also lists your connected Bluetooth devices.</string>
 <key>NSAudioCaptureUsageDescription</key><string>Redline moves its backdrop with the music your Mac is playing. The sound is not recorded or sent anywhere.</string>
 <key>CFBundleName</key><string>Redline</string>
 <key>CFBundleDisplayName</key><string>Redline</string>
