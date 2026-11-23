@@ -3,6 +3,10 @@
 # Rebuilds Redline.app from src/main.swift and installs it in /Applications. The Touch Bar part (Glowstrip) is built here too and lives inside Redline.app.
 set -e
 cd "$(dirname "$0")"
+# Signing: with the owner's own local certificate ("Ali Razavi Local Code Signing", in the login keychain, made on this Mac),
+# macOS recognises a rebuilt Redline and Touch Bar part as the same apps, so the Accessibility and sound permissions stay on.
+# Without it (another Mac) the apps are signed ad hoc, and every rebuild counts as a new app for those permissions.
+SIGN="-"; security find-identity -p codesigning 2>/dev/null | grep -q "Ali Razavi Local Code Signing" && SIGN="Ali Razavi Local Code Signing"
 mkdir -p build preview
 swiftc -swift-version 5 -O -o build/Redline src/main.swift -framework AppKit -framework SwiftUI -framework IOKit -framework ServiceManagement -framework CoreWLAN -framework CoreAudio -framework AudioToolbox -framework Accelerate
 ./build/Redline --render "$PWD/preview"
@@ -57,12 +61,16 @@ if [ ! -x "$GB" ] || [ src/touchbar.swift -nt "$GB" ] || [ src/touchbar-bridge.h
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 P
-    codesign --force --sign - "$G"
+    codesign --force --sign "$SIGN" "$G"
   else
     echo "The Touch Bar part did not build on this Mac: installing Redline without it."; rm -rf "$G"
   fi
 fi
-if [ -d "$G" ]; then mkdir -p "$APP/Contents/Helpers"; cp -Rp "$G" "$APP/Contents/Helpers/Glowstrip.app"; fi
+if [ -d "$G" ]; then
+  # sign with the local certificate if the copy was made before it existed (harmless otherwise: the identity stays the same)
+  codesign -dv "$G" 2>&1 | grep -q "Authority=$SIGN" || [ "$SIGN" = "-" ] || codesign --force --sign "$SIGN" "$G"
+  mkdir -p "$APP/Contents/Helpers"; cp -Rp "$G" "$APP/Contents/Helpers/Glowstrip.app"
+fi
 rm -rf build/icon.iconset; mkdir build/icon.iconset
 for s in 16 32 128 256 512; do
   sips -z $s $s preview/icon_1024.png --out build/icon.iconset/icon_${s}x${s}.png >/dev/null
@@ -88,7 +96,7 @@ cat > "$APP/Contents/Info.plist" <<'P'
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 P
-codesign --force --sign - "$APP"
+codesign --force --sign "$SIGN" "$APP"
 pkill -x Redline 2>/dev/null || true
 pkill -x Glowstrip 2>/dev/null || true
 rm -rf "/Applications/Redline.app"
