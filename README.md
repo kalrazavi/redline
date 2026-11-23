@@ -2,7 +2,12 @@
 
 **Your whole Mac on one tuner-style dashboard.** A small needle in the menu bar: click it and a gauge cluster shows what the whole machine is doing.
 
-<p><img src="preview/panel.png" width="460" alt="The Redline panel: three dials, a column per CPU core, and tiles for power, battery, thermals, network, disk and USB"></p>
+<p><img src="preview/look_vapor.png" width="460" alt="The Redline card with the engine running in the Vapor look: three dials, a column per CPU core, tiles for power, battery, thermals, network, disk and connected devices"></p>
+
+**Push to start.** When the Mac starts, it starts exactly as Apple made it. Redline loads quietly after everything else, and a start button appears. Press it and the engine turns over: the needles and the Touch Bar rev together, two blips and then the redline, and your look, lights, fans and custom Touch Bar take over. Switch the engine off and the Mac is back to its own defaults.
+
+<p><img src="preview/start_gate.png" width="230" alt="The push-to-start window: a metal ENGINE START STOP button inside a ring of tick marks"> <img src="preview/panel_off.png" width="230" alt="The card with the engine off: gauges dimmed behind the start button"></p>
+<p><img src="preview/touchbar/rev.png" width="700" alt="Four photos of the Touch Bar during an engine start: a first blip, a higher rev, everything at the redline, then running normally"></p>
 
 ## Why I built it
 
