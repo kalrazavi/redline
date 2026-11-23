@@ -484,7 +484,7 @@ final class Model: ObservableObject {
     @Published var cranking = false       // between the push and the first blip, while the Touch Bar part starts up
     @Published var autoStart = UserDefaults.standard.bool(forKey: "autoStart")
     @Published var rev: Double? = nil     // while revving, every needle shows this instead of its reading
-    var onEngine: ((Bool) -> Void)?, onRedline: (() -> Void)?
+    var onEngine: ((Bool) -> Void)?, onRedline: (() -> Void)?, onPush: (() -> Void)?      // onPush: the start button was pressed (handled by the app)
     func setAutoStart(_ on: Bool) { autoStart = on; UserDefaults.standard.set(on, forKey: "autoStart") }
     func startEngine(rev: Bool) {
         guard !engine else { return }
@@ -1092,7 +1092,7 @@ struct Panel: View {
 // A metal start button in a ring of tick marks, in the colour of the current look. At rest its ring breathes; pressed, it sinks,
 // the ticks light up one by one while the Touch Bar part starts (the starter cranking), then the engine revs.
 struct StartButton: View {
-    @ObservedObject var m: Model; var size: CGFloat = 150; var onPush: () -> Void = {}
+    @ObservedObject var m: Model; var size: CGFloat = 150
     @State private var breathe = false
     var body: some View {
         let c = Ink.ice, ticks = 36
@@ -1108,7 +1108,7 @@ struct StartButton: View {
                 // breathing halo
                 Circle().stroke(c.opacity(breathe ? 0.75 : 0.25), lineWidth: size * 0.05).blur(radius: size * 0.05).frame(width: size * 1.02, height: size * 1.02)
                     .scaleEffect(breathe ? 1.03 : 0.98)
-                Button(action: { guard !m.cranking else { return }; onPush() }) {
+                Button(action: { guard !m.cranking else { return }; m.onPush?() }) {
                     ZStack {
                         Circle().fill(RadialGradient(colors: [Color(white: 0.30), Color(white: 0.11), Color(white: 0.04)], center: UnitPoint(x: 0.35, y: 0.28), startRadius: 0, endRadius: size * 0.62))
                         Circle().strokeBorder(LinearGradient(colors: [Color.white.opacity(0.55), Color.white.opacity(0.05), Color.white.opacity(0.30)], startPoint: .top, endPoint: .bottom), lineWidth: size * 0.035)
@@ -1136,14 +1136,14 @@ struct Sink: ButtonStyle {
 }
 /// The window that appears in the middle of the screen when Redline has loaded in PUSH START mode.
 struct StartGate: View {
-    @ObservedObject var m: Model; var push: () -> Void; var later: () -> Void
+    @ObservedObject var m: Model; var later: () -> Void
     var body: some View {
         VStack(spacing: 14) {
             HStack(spacing: 7) {
                 Image(nsImage: BarIcon.image(load: m.rev ?? 0, hot: false, scale: 1.0, color: NSColor(Ink.red))).frame(width: 22, height: 16)
                 Text("REDLINE").font(.system(size: 15, weight: .heavy, design: .rounded)).tracking(4).foregroundColor(.white)
             }
-            StartButton(m: m, size: 150, onPush: push)
+            StartButton(m: m, size: 150)
             Button(action: later) {
                 Text("NOT NOW · MAC DEFAULTS").font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(1.6).foregroundColor(Ink.dim)
             }.buttonStyle(.plain).opacity(m.cranking ? 0 : 1)
@@ -1732,6 +1732,8 @@ struct Root: View {
 }
 
 final class Card: NSPanel { override var canBecomeKey: Bool { true } }
+/// A SwiftUI view that takes the first click even when its window is not the active one (the start window must never need two clicks).
+final class FirstClick<V: View>: NSHostingView<V> { override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true } }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = Model(); var item: NSStatusItem!
@@ -1787,6 +1789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onTick = { [weak self] in self?.redraw($0) }
         model.onNOS = { [weak self] in self?.backdrop.flash() }
         model.onRedline = { [weak self] in self?.backdrop.flash() }
+        model.onPush = { [weak self] in self?.push() }
         model.onEngine = { [weak self] on in if !on { self?.lit = true } }       // lets the backdrop fade out once
         model.start()
         // The Touch Bar part says when its rev begins, so the needles blip at the same moment. Local to this Mac.
@@ -1856,15 +1859,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // ---- Push to start ----
     /// The middle-of-the-screen start window, shown once Redline has loaded in PUSH START mode.
     private func showGate() {
-        let h = NSHostingController(rootView: StartGate(m: model, push: { [weak self] in self?.push() }, later: { [weak self] in self?.closeGate() }))
-        let size = h.sizeThatFits(in: NSSize(width: 300, height: 600))
+        let h = FirstClick(rootView: StartGate(m: model, later: { [weak self] in self?.closeGate() }))
+        let size = h.fittingSize
         let g = Card(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         g.isOpaque = false; g.backgroundColor = .clear; g.hasShadow = true; g.level = .floating
         g.isMovableByWindowBackground = true; g.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        g.contentViewController = h; g.setContentSize(size)
+        h.frame = NSRect(origin: .zero, size: size); g.contentView = h
         let vis = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         g.setFrameOrigin(NSPoint(x: vis.midX - size.width / 2, y: vis.midY - size.height / 2 + 40))
-        g.alphaValue = 0; g.orderFrontRegardless()
+        g.alphaValue = 0; g.makeKeyAndOrderFront(nil)       // key straight away, so the first click presses the button
         NSAnimationContext.runAnimationGroup { $0.duration = 0.5; g.animator().alphaValue = 1 }
         gate = g
     }
@@ -1953,7 +1956,7 @@ if args.count >= 3, args[1] == "--render" {
         let m = Model(); m.silent = true; m.sampleNow()
         let off = ImageRenderer(content: Panel(m: m, solid: true)); off.scale = 2
         if let img = off.nsImage { writePNG(img, args[2] + "/panel_off.png", px: Int(img.size.width * 2)) }
-        let g = ImageRenderer(content: StartGate(m: m, push: {}, later: {}).padding(30)); g.scale = 2
+        let g = ImageRenderer(content: StartGate(m: m, later: {}).padding(30)); g.scale = 2
         if let img = g.nsImage { writePNG(img, args[2] + "/start_gate.png", px: Int(img.size.width * 2)) }
         m.engine = true
         let r = ImageRenderer(content: Panel(m: m, solid: true)); r.scale = 2
