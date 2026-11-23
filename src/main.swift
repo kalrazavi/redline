@@ -401,7 +401,7 @@ final class Model: ObservableObject {
     @Published var fanStale = false          // an older helper is installed and needs the set-up run once more
     @Published var fanNote = ""              // what the helper said if it could not do it
     /// NOS always means maximum; otherwise it is your choice.
-    var fansWanted: Bool { nos || fanMax }
+    var fansWanted: Bool { engine && (nos || fanMax) }      // engine off = macOS runs the fans
     private var fanApplied = Date.distantPast
     func applyFans() {
         fanApplied = Date(); let want = fansWanted
@@ -421,6 +421,7 @@ final class Model: ObservableObject {
     func announce() {
         guard !silent else { return }
         UserDefaults.standard.set(nos, forKey: "nos")
+        if engine { UserDefaults.standard.set(nos, forKey: "nosLast") }       // what NOS was when the engine last ran; it comes back on the next start
         DistributedNotificationCenter.default().postNotificationName(Notification.Name("local.redline.theme"), object: nil,
                                                                      userInfo: ["glow": Ink.glow, "vibe": vibe, "nos": nos], deliverImmediately: true)
     }
@@ -463,7 +464,7 @@ final class Model: ObservableObject {
     /// If Coffee Mode is running and its switch was flipped there, NOS follows.
     func refreshNOS() {
         DispatchQueue.main.async {
-            guard -self.coffeeSynced.timeIntervalSinceNow > 4 else { return }
+            guard self.engine, -self.coffeeSynced.timeIntervalSinceNow > 4 else { return }
             DispatchQueue.global(qos: .utility).async {
                 guard Model.coffeePID != nil else { return }
                 let on = Model.coffeeOn()
@@ -474,7 +475,43 @@ final class Model: ObservableObject {
     /// Where each socket (1-4) physically sits on this MacBook Pro. Fixed, not adjustable: 0 top-left, 1 bottom-left, 2 top-right, 3 bottom-right ("top" = by the hinge).
     /// So: socket 1 bottom-left, socket 2 top-left, socket 3 top-right, socket 4 bottom-right.
     let portMap = [1, 0, 2, 3]
-    @Published var sweep = false          // "ignition": every needle swings to the top once when the panel opens
+    // ---- The engine ----
+    // Engine off = the Mac exactly as Apple ships it: Apple's own Touch Bar, macOS running the fans, nothing held awake.
+    // Engine on = Redline takes over again with the settings it had last time (underglow, VIBE, NOS, fans, Touch Bar look).
+    // The card and its gauges work either way. At start-up the engine starts by itself (AUTO START) or waits for the
+    // push-to-start button (PUSH START); only a push revs the needles and the Touch Bar.
+    @Published var engine = false
+    @Published var cranking = false       // between the push and the first blip, while the Touch Bar part starts up
+    @Published var autoStart = UserDefaults.standard.bool(forKey: "autoStart")
+    @Published var rev: Double? = nil     // while revving, every needle shows this instead of its reading
+    var onEngine: ((Bool) -> Void)?, onRedline: (() -> Void)?
+    func setAutoStart(_ on: Bool) { autoStart = on; UserDefaults.standard.set(on, forKey: "autoStart") }
+    func startEngine(rev: Bool) {
+        guard !engine else { return }
+        engine = true
+        if !silent {
+            startTouchBarCompanion(rev: rev)
+            if UserDefaults.standard.bool(forKey: "nosLast") { setNOS(true) } else { refreshNOS() }
+            announce(); applyFans()
+        }
+        onEngine?(true)
+    }
+    func stopEngine() {
+        guard engine else { return }
+        UserDefaults.standard.set(nos, forKey: "nosLast")
+        engine = false; cranking = false; rev = nil
+        setNOS(false)                     // nothing held awake (and Coffee Mode, if present, switched off with it)
+        applyFans(); stopTouchBarCompanion()
+        onEngine?(false)
+    }
+    /// The needles rev like a car at key-on: two blips, then all the way to the redline, then they drop to the real readings.
+    /// Same timing as the Touch Bar's rev (StripView.revKeys in touchbar.swift); the needles' spring makes the overshoot.
+    func revUp() {
+        cranking = false
+        for (t, v) in [(0.0, 0.42), (0.30, 0.10), (0.58, 0.70), (0.90, 0.22), (1.22, 1.0), (2.0, nil)] as [(Double, Double?)] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { guard self.engine else { return }; self.rev = v; if v == 1 { self.onRedline?() } }
+        }
+    }
     @Published var peakCPU = 0.0; @Published var peakGPU = 0.0; @Published var peakMem = 0.0
     @Published var hDown: [Double] = Array(repeating: 0, count: 60); @Published var hUp: [Double] = Array(repeating: 0, count: 60)
     @Published var hRead: [Double] = Array(repeating: 0, count: 60); @Published var hWrite: [Double] = Array(repeating: 0, count: 60)
@@ -486,7 +523,7 @@ final class Model: ObservableObject {
     private var busySlow = false
     private lazy var sockets = probe.socketTable()
 
-    func start() { schedule(2.0); refreshNOS(); announce(); applyFans() }
+    func start() { schedule(2.0); applyFans() }      // engine still off: the fans go (or stay) with macOS
     private func schedule(_ every: Double) {
         timer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: q)
@@ -497,11 +534,7 @@ final class Model: ObservableObject {
     func setOpen(_ o: Bool) {
         q.async { self.open = o; self.n = 0; if o { self.probe.resetRates() } }
         if o { refreshNOS() }
-        if o {
-            peakCPU = 0; peakGPU = 0; peakMem = 0
-            sweep = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.sweep = false }
-        }
+        if o { peakCPU = 0; peakGPU = 0; peakMem = 0 }      // no rev here: the needles only rev when the engine is started with the button
         schedule(o ? 1.0 : 2.0)
     }
     private func tick() {
@@ -749,11 +782,11 @@ struct TileShape: Shape {
 
 /// A small on/off pill for the footer.
 struct Pill: View {
-    var text: String; var on: Bool; var tint: Color = Ink.ice; var tip: String; var action: () -> Void
+    var text: String; var on: Bool; var tint: Color = Ink.ice; var width: CGFloat? = nil; var tip: String; var action: () -> Void
     var body: some View {
         Button(action: action) {
             Text(text).font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(1.5)
-                .foregroundColor(on ? .black : Ink.mid).fixedSize().frame(width: text.count > 5 ? 58 : 46, height: 18)
+                .foregroundColor(on ? .black : Ink.mid).fixedSize().frame(width: width ?? (text.count > 5 ? 58 : 46), height: 18)
                 .background(Capsule().fill(on ? tint : Color.white.opacity(0.07))).contentShape(Rectangle())
         }.buttonStyle(.plain).help(tip)
     }
@@ -796,7 +829,8 @@ struct Panel: View {
     @State private var loginOn = SMAppService.mainApp.status == .enabled
     var quit: () -> Void = {}
     var solid = false      // true only for the preview picture; live, the backdrop view sits behind
-    private func v(_ x: Double) -> Double { m.sweep ? 1 : x }
+    private func v(_ x: Double) -> Double { m.rev ?? x }
+    private var parked: Bool { !m.engine || m.cranking }       // engine off: the push-to-start button sits over the gauges
     private var odo: String {
         let t = Int(m.s.uptime); return String(format: "%02dd %02dh %02dm", t / 86400, (t % 86400) / 3600, (t % 3600) / 60)
     }
@@ -885,13 +919,26 @@ struct Panel: View {
                     do { if loginOn { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() } } catch {}
                     loginOn = SMAppService.mainApp.status == .enabled
                 }
+                // How the engine starts when Redline loads: by itself, or with the push-to-start button (Mac defaults until then).
+                HStack(spacing: 0) {
+                    ForEach([true, false], id: \.self) { auto in
+                        Button(action: { m.setAutoStart(auto) }) {
+                            Text(auto ? "AUTO" : "PUSH").font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(1.3)
+                                .foregroundColor(m.autoStart == auto ? .black : Ink.mid).fixedSize().frame(width: 42, height: 18)
+                                .background(Capsule().fill(m.autoStart == auto ? Ink.ice : Color.clear)).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        .help(auto ? "Redline starts the engine by itself as soon as it has loaded: your look, Touch Bar, fans and NOS straight away, no rev."
+                                   : "Redline loads with the Mac left as Apple made it. A push-to-start button appears; pressing it revs the engine and switches everything on.")
+                    }
+                }.background(Capsule().fill(Color.white.opacity(0.07)))
+                .overlay(Text("START").font(.system(size: 6.5, weight: .heavy, design: .rounded)).tracking(1.2).foregroundColor(Ink.dim).fixedSize().offset(y: -14))
                 Pill(text: "VIBE", on: m.vibe || m.nos, tip: m.nos ? "NOS has taken over the lights. Your VIBE setting comes back when NOS goes off." : m.vibeNote.isEmpty ? "Lights move with the music, and the Touch Bar takes the underglow look" : m.vibeNote) { m.vibe.toggle(); UserDefaults.standard.set(m.vibe, forKey: "vibe"); m.announce() }
                     .disabled(m.nos).opacity(m.nos ? 0.55 : 1)       // NOS is an override: shown as on, dimmed, not clickable
-                Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: "Keeps the Mac and its screen awake, fans at maximum, with its own overdrive look") { m.toggleNOS() }
+                Pill(text: "NOS", on: m.nos, tint: Ink.nos, tip: m.engine ? "Keeps the Mac and its screen awake, fans at maximum, with its own overdrive look" : "Start the engine first") { m.toggleNOS() }
+                    .disabled(!m.engine).opacity(m.engine ? 1 : 0.45)
                 HStack(spacing: 6) {
-                    label("FANS", 8).fixedSize()
                     let setUp = !m.fanReady || m.fanStale, held = m.s.fanForced
-                    Pill(text: !m.fanReady ? "SET UP" : (m.fanStale ? "UPDATE" : (m.fansWanted ? "MAX" : "AUTO")), on: !setUp && m.fansWanted && held, tint: Ink.amber,
+                    Pill(text: !m.fanReady ? "FANS SET UP" : (m.fanStale ? "FANS UPDATE" : (m.fansWanted ? "FANS MAX" : "FANS AUTO")), on: !setUp && m.fansWanted && held, tint: Ink.amber, width: setUp ? 86 : 72,
                          tip: !m.fanReady ? "Fan control needs a one-time set-up with your Mac password. Click to start it."
                               : m.fanStale ? "The fan helper was improved. Click to install the new one (asks for your Mac password once more)."
                               : !m.fanNote.isEmpty ? "The Mac did not accept it: \(m.fanNote)"
@@ -900,10 +947,9 @@ struct Panel: View {
                             if Fans.current { m.applyFans() }
                             else if let r = Bundle.main.resourcePath { NSWorkspace.shared.open(URL(fileURLWithPath: r + "/Enable fan control.command")) }
                         } else { m.fanMax.toggle(); UserDefaults.standard.set(m.fanMax, forKey: "fanMax"); m.applyFans() }
-                    }.disabled(m.nos && !setUp).opacity(m.nos && !setUp ? 0.55 : 1)
-                }.padding(.leading, 6)
-                HStack(spacing: 5) {
-                    label("GLOW", 8).fixedSize().opacity(m.nos ? 0.45 : 1)
+                    }.disabled((m.nos || !m.engine) && !setUp).opacity((m.nos || !m.engine) && !setUp ? 0.55 : 1)
+                }
+                HStack(spacing: 4) {
                     ForEach(0..<8, id: \.self) { i in
                         Button(action: { Ink.glow = i; UserDefaults.standard.set(i, forKey: "glow"); m.theme = i; m.announce() }) {
                             Circle().fill(Ink.glows[i]).frame(width: 10, height: 10)
@@ -911,11 +957,11 @@ struct Panel: View {
                                 .overlay(Circle().strokeBorder(Color.white.opacity(m.theme == i ? (m.nos ? 0.40 : 0.95) : 0), lineWidth: 1.5).padding(-2.5))
                         }.buttonStyle(.plain).disabled(m.nos).help(m.nos ? "Locked while NOS is on. \(Ink.glowNames[i]) comes back when you switch NOS off." : Ink.glowNames[i])
                     }
-                }.padding(.leading, 10)
-                Spacer()
+                }.padding(.leading, 4)
+                Spacer(minLength: 4)
                 Text("© 2026 Ali Razavi").font(.system(size: 9.5, weight: .medium, design: .rounded)).foregroundColor(Ink.dim)
                 Button(action: quit) { Text("Quit").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundColor(Ink.mid) }.buttonStyle(.plain)
-                    .padding(.leading, 10)
+                    .padding(.leading, 8)
             }
     }
     @ViewBuilder private var gauges: some View {
@@ -940,6 +986,14 @@ struct Panel: View {
                         .padding(.horizontal, 7).padding(.vertical, 3).background(Capsule().fill(Ink.red)).foregroundColor(.white)
                 }
                 VStack(alignment: .trailing, spacing: 1) { label("UPTIME", 8); Text(odo).font(digits(12, .semibold)).foregroundColor(Ink.mid) }
+                if m.engine && !m.cranking {
+                    Button(action: { m.stopEngine() }) {
+                        Image(systemName: "power").font(.system(size: 11, weight: .heavy)).foregroundColor(Ink.red)
+                            .frame(width: 26, height: 26).background(Circle().fill(Color.black.opacity(0.55)))
+                            .overlay(Circle().strokeBorder(Ink.red.opacity(0.55), lineWidth: 1.2)).contentShape(Circle())
+                    }.buttonStyle(.plain).padding(.leading, 10)
+                    .help("Engine off: Apple's own Touch Bar, macOS fans and normal sleep come back. Your settings wait for the next start.")
+                }
             }
             // shift lights
             HStack(spacing: 5) {
@@ -1011,7 +1065,13 @@ struct Panel: View {
             }
     }
     var body: some View {
-        VStack(spacing: 10) { gauges; tiles; recordsRow; usbBay; footer }
+        VStack(spacing: 10) {
+            VStack(spacing: 10) { gauges; tiles; recordsRow; usbBay }
+                .saturation(parked ? 0.15 : 1).opacity(parked ? 0.30 : 1)
+                .overlay(Group { if parked { StartButton(m: m, size: 150).transition(.opacity.combined(with: .scale(scale: 1.15))) } })
+                .animation(.easeOut(duration: 0.45), value: parked)
+            footer
+        }
         .id(Ink.active * 2 + (m.nos ? 1 : 0))
         .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12).frame(width: 672)
         .background(ZStack {
@@ -1024,6 +1084,78 @@ struct Panel: View {
         })
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+// ---------- Push to start ----------
+// A metal start button in a ring of tick marks, in the colour of the current look. At rest its ring breathes; pressed, it sinks,
+// the ticks light up one by one while the Touch Bar part starts (the starter cranking), then the engine revs.
+struct StartButton: View {
+    @ObservedObject var m: Model; var size: CGFloat = 150; var onPush: () -> Void = {}
+    @State private var breathe = false
+    var body: some View {
+        let c = Ink.ice, ticks = 36
+        VStack(spacing: size * 0.10) {
+            ZStack {
+                // tick ring: dim at rest, filling up while cranking
+                ForEach(0..<ticks, id: \.self) { i in
+                    Capsule().fill(m.cranking ? c : c.opacity(0.22)).frame(width: 2, height: i % 3 == 0 ? size * 0.075 : size * 0.045)
+                        .offset(y: -size * 0.62).rotationEffect(.degrees(Double(i) * 360 / Double(ticks)))
+                        .opacity(m.cranking ? 1 : (i % 3 == 0 ? 0.9 : 0.6))
+                        .animation(m.cranking ? .easeIn(duration: 0.05).delay(Double(i) * 0.022) : .easeOut(duration: 0.2), value: m.cranking)
+                }
+                // breathing halo
+                Circle().stroke(c.opacity(breathe ? 0.75 : 0.25), lineWidth: size * 0.05).blur(radius: size * 0.05).frame(width: size * 1.02, height: size * 1.02)
+                    .scaleEffect(breathe ? 1.03 : 0.98)
+                Button(action: { guard !m.cranking else { return }; onPush() }) {
+                    ZStack {
+                        Circle().fill(RadialGradient(colors: [Color(white: 0.30), Color(white: 0.11), Color(white: 0.04)], center: UnitPoint(x: 0.35, y: 0.28), startRadius: 0, endRadius: size * 0.62))
+                        Circle().strokeBorder(LinearGradient(colors: [Color.white.opacity(0.55), Color.white.opacity(0.05), Color.white.opacity(0.30)], startPoint: .top, endPoint: .bottom), lineWidth: size * 0.035)
+                        Circle().strokeBorder(c.opacity(m.cranking ? 1 : 0.85), lineWidth: 2).padding(size * 0.075)
+                        VStack(spacing: size * 0.012) {
+                            Image(systemName: "power").font(.system(size: size * 0.11, weight: .heavy)).foregroundColor(c)
+                            Text("ENGINE").font(.system(size: size * 0.062, weight: .heavy, design: .rounded)).tracking(size * 0.016).foregroundColor(Ink.mid)
+                            Text("START").font(.system(size: size * 0.15, weight: .black, design: .rounded)).italic().tracking(size * 0.01).foregroundColor(.white)
+                            Text("STOP").font(.system(size: size * 0.062, weight: .heavy, design: .rounded)).tracking(size * 0.016).foregroundColor(Ink.dim)
+                        }
+                    }.frame(width: size, height: size).contentShape(Circle())
+                }.buttonStyle(Sink())
+            }.frame(width: size * 1.35, height: size * 1.35)
+            Text(m.cranking ? "STARTING…" : "PUSH TO START").font(.system(size: 11, weight: .heavy, design: .rounded)).tracking(4).foregroundColor(m.cranking ? c : .white)
+        }
+        .onAppear { withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { breathe = true } }
+    }
+}
+/// The button sinks a little and darkens while held, like a real one.
+struct Sink: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.scaleEffect(configuration.isPressed ? 0.93 : 1).brightness(configuration.isPressed ? -0.08 : 0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+/// The window that appears in the middle of the screen when Redline has loaded in PUSH START mode.
+struct StartGate: View {
+    @ObservedObject var m: Model; var push: () -> Void; var later: () -> Void
+    var body: some View {
+        VStack(spacing: 14) {
+            HStack(spacing: 7) {
+                Image(nsImage: BarIcon.image(load: m.rev ?? 0, hot: false, scale: 1.0, color: NSColor(Ink.red))).frame(width: 22, height: 16)
+                Text("REDLINE").font(.system(size: 15, weight: .heavy, design: .rounded)).tracking(4).foregroundColor(.white)
+            }
+            StartButton(m: m, size: 150, onPush: push)
+            Button(action: later) {
+                Text("NOT NOW · MAC DEFAULTS").font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(1.6).foregroundColor(Ink.dim)
+            }.buttonStyle(.plain).opacity(m.cranking ? 0 : 1)
+            .help("Keep the Mac as Apple made it. Start the engine any time from the needle in the menu bar.")
+        }
+        .padding(.top, 22).padding(.bottom, 18).frame(width: 300)
+        .background(ZStack {
+            LinearGradient(colors: [Ink.bg1, Ink.bg0], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [Ink.ice.opacity(0.16), .clear], center: .center, startRadius: 10, endRadius: 190)
+        })
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(Ink.ice.opacity(0.30), lineWidth: 1))
         .environment(\.colorScheme, .dark)
     }
 }
@@ -1093,13 +1225,13 @@ func macHasTouchBar() -> Bool {
 }
 /// The Touch Bar part (Glowstrip) lives inside Redline.app. Redline starts it on a Mac with a Touch Bar and stops it when Redline quits.
 let touchBarApp = Bundle.main.bundlePath + "/Contents/Helpers/Glowstrip.app"
-func startTouchBarCompanion() {
+func startTouchBarCompanion(rev: Bool) {
     DispatchQueue.global(qos: .utility).async {
         // `defaults write local.redline touchBar -bool false` keeps Apple's own Touch Bar (the restore script sets this).
         guard UserDefaults.standard.object(forKey: "touchBar") as? Bool ?? true else { return }
         guard macHasTouchBar(), FileManager.default.fileExists(atPath: touchBarApp) else { return }
         guard NSRunningApplication.runningApplications(withBundleIdentifier: "local.glowstrip").isEmpty else { return }
-        _ = Probe.run("/usr/bin/open", ["-g", "-a", touchBarApp])
+        _ = Probe.run("/usr/bin/open", ["-g", "-a", touchBarApp] + (rev ? [] : ["--args", "--norev"]))
     }
 }
 func stopTouchBarCompanion() {
@@ -1606,11 +1738,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var card: Card!; private var host: NSHostingController<Root>!; private var measure: NSHostingController<Panel>!
     private let backdrop = Backdrop(frame: .zero)
     private let tap = AudioTap(); private var beat: Timer?
-    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?; private var termSig: DispatchSourceSignal?; private var nosSig: DispatchSourceSignal?
+    private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?; private var termSig: DispatchSourceSignal?; private var nosSig: DispatchSourceSignal?; private var hupSig: DispatchSourceSignal?
     private var outside: Any?; private var keys: Any?; private var lit = false
     private let sticky = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil   // testing only: stay open
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // Started at log-in? Then wait our turn: macOS, drivers and the other apps load first, Redline comes in quietly afterwards.
+        guard let since = sessionAge(), since < 180 || ProcessInfo.processInfo.environment["REDLINE_LOGIN_TEST"] != nil else { boot(); return }
+        waitForQuiet(since: Date().addingTimeInterval(-since))
+    }
+    /// Seconds since this log-in session began (the Dock starts with it), or nil if that cannot be read.
+    private func sessionAge() -> Double? {
+        guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
+        var info = kinfo_proc(), size = MemoryLayout<kinfo_proc>.stride, mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, dock.processIdentifier]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let t = info.kp_proc.p_un.__p_starttime
+        return Date().timeIntervalSince1970 - (Double(t.tv_sec) + Double(t.tv_usec) / 1e6)
+    }
+    /// Checks every 5 seconds, doing nothing else: starts once the session is 45 s old and the Mac has calmed down
+    /// (1-minute load below half its cores), and in any case after 2.5 minutes.
+    private func waitForQuiet(since login: Date) {
+        let cores = Double(ProcessInfo.processInfo.activeProcessorCount)
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] t in
+            let age = -login.timeIntervalSinceNow
+            var load = [Double](repeating: 0, count: 3); getloadavg(&load, 3)
+            guard age >= 150 || (age >= 45 && load[0] < cores * 0.5) else { return }
+            t.invalidate(); self?.boot()
+        }
+    }
+    private var gate: Card?
+    private func boot() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = BarIcon.image(load: 0, hot: false)
         item.button?.target = self; item.button?.action = #selector(toggle)
@@ -1629,8 +1786,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         card.contentView = box
         model.onTick = { [weak self] in self?.redraw($0) }
         model.onNOS = { [weak self] in self?.backdrop.flash() }
+        model.onRedline = { [weak self] in self?.backdrop.flash() }
+        model.onEngine = { [weak self] on in if !on { self?.lit = true } }       // lets the backdrop fade out once
         model.start()
-        startTouchBarCompanion()
+        // The Touch Bar part says when its rev begins, so the needles blip at the same moment. Local to this Mac.
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("local.glowstrip.ignite"), object: nil, queue: .main) { [weak self] _ in self?.ignited() }
+        if model.autoStart { model.startEngine(rev: false) } else { showGate() }
         // `kill -USR1 <pid>` opens or closes the panel from a script on this Mac (local signal only).
         signal(SIGUSR1, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
@@ -1639,7 +1800,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `kill -USR2 <pid>` flips NOS from a script on this Mac, e.g. before a long test run (local signal only).
         signal(SIGUSR2, SIG_IGN)
         let two = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
-        two.setEventHandler { [weak self] in self?.model.toggleNOS() }; two.resume(); nosSig = two
+        two.setEventHandler { [weak self] in if self?.model.engine == true { self?.model.toggleNOS() } }; two.resume(); nosSig = two
+        // `kill -HUP <pid>` presses the start button, or switches the engine off when it runs (testing hook, local signal only).
+        signal(SIGHUP, SIG_IGN)
+        let hup = DispatchSource.makeSignalSource(signal: SIGHUP, queue: .main)
+        hup.setEventHandler { [weak self] in guard let s = self else { return }; if s.model.engine && !s.model.cranking { s.model.stopEngine() } else { s.push() } }
+        hup.resume(); hupSig = hup
         signal(SIGTERM, SIG_IGN)
         let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         term.setEventHandler { NSApp.terminate(nil) }; term.resume(); termSig = term
@@ -1670,7 +1836,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 30 times a second while the card is open: move the lights with the music (VIBE) and/or the NOS overdrive pulse.
     private func pulse() {
         var levels = [Float](repeating: 0, count: AudioTap.bands), wave: [Float] = []
-        if model.vibe {
+        let vibe = model.vibe && model.engine && !model.cranking
+        if vibe {
             if !tap.running { let why = tap.start(); if model.vibeNote != (why ?? "") { model.vibeNote = why ?? "" }; if why != nil { model.vibe = false } }
             levels = tap.read(); wave = tap.wave()
         } else if tap.running { tap.stop() }
@@ -1681,11 +1848,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 levels[b] = max(levels[b], synth)
             }
         }
-        guard model.vibe || model.nos || lit else { return }
-        lit = model.vibe || model.nos
+        guard vibe || model.nos || lit else { return }
+        lit = vibe || model.nos
         backdrop.set(levels, wave: wave)
     }
     @objc func toggle() { card.isVisible ? close() : open() }
+    // ---- Push to start ----
+    /// The middle-of-the-screen start window, shown once Redline has loaded in PUSH START mode.
+    private func showGate() {
+        let h = NSHostingController(rootView: StartGate(m: model, push: { [weak self] in self?.push() }, later: { [weak self] in self?.closeGate() }))
+        let size = h.sizeThatFits(in: NSSize(width: 300, height: 600))
+        let g = Card(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        g.isOpaque = false; g.backgroundColor = .clear; g.hasShadow = true; g.level = .floating
+        g.isMovableByWindowBackground = true; g.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        g.contentViewController = h; g.setContentSize(size)
+        let vis = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        g.setFrameOrigin(NSPoint(x: vis.midX - size.width / 2, y: vis.midY - size.height / 2 + 40))
+        g.alphaValue = 0; g.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.5; g.animator().alphaValue = 1 }
+        gate = g
+    }
+    private func closeGate() {
+        guard let g = gate else { return }; gate = nil
+        NSAnimationContext.runAnimationGroup({ $0.duration = 0.35; g.animator().alphaValue = 0 }, completionHandler: { g.orderOut(nil) })
+    }
+    private var crankTimeout: DispatchWorkItem?
+    /// The button was pressed (in the start window or on the card): crank, then rev when the Touch Bar part is up.
+    func push() {
+        guard !model.engine else { return }
+        model.cranking = true
+        model.startEngine(rev: true)
+        // No Touch Bar (or it is slow to start)? Rev anyway after a moment.
+        let w = DispatchWorkItem { [weak self] in self?.ignited() }; crankTimeout = w
+        let tb = UserDefaults.standard.object(forKey: "touchBar") as? Bool ?? true
+        DispatchQueue.main.asyncAfter(deadline: .now() + (tb && macHasTouchBar() ? 2.5 : 0.9), execute: w)
+    }
+    private func ignited() {
+        crankTimeout?.cancel(); crankTimeout = nil
+        guard model.engine, model.cranking else { return }
+        if gate != nil {      // the start window hands over to the card, which shows the rev
+            closeGate()
+            if !card.isVisible { open() }
+        }
+        model.revUp()
+    }
     private func open() {
         model.setOpen(true)
         fit(place: true)
@@ -1706,7 +1912,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let o = outside { NSEvent.removeMonitor(o); outside = nil }
         if let k = keys { NSEvent.removeMonitor(k); keys = nil }
     }
-    func applicationWillTerminate(_ n: Notification) { tap.stop(); Fans.set(max: false); stopTouchBarCompanion() }      // never leave the fans held when Redline is not there to release them
+    func applicationWillTerminate(_ n: Notification) {
+        if model.engine { UserDefaults.standard.set(model.nos, forKey: "nosLast") }       // NOS comes back with the next engine start
+        tap.stop(); Fans.set(max: false); stopTouchBarCompanion()
+    }      // never leave the fans held when Redline is not there to release them
 }
 
 @MainActor func writePNG(_ img: NSImage, _ path: String, px: Int) {
@@ -1742,6 +1951,11 @@ if args.count >= 3, args[1] == "--render" {
         writePNG(BarIcon.appIcon(), args[2] + "/icon_1024.png", px: 1024)
         writePNG(BarIcon.image(load: 0.35, hot: false, scale: 8, color: .white), args[2] + "/menubar_icon.png", px: 352)
         let m = Model(); m.silent = true; m.sampleNow()
+        let off = ImageRenderer(content: Panel(m: m, solid: true)); off.scale = 2
+        if let img = off.nsImage { writePNG(img, args[2] + "/panel_off.png", px: Int(img.size.width * 2)) }
+        let g = ImageRenderer(content: StartGate(m: m, push: {}, later: {}).padding(30)); g.scale = 2
+        if let img = g.nsImage { writePNG(img, args[2] + "/start_gate.png", px: Int(img.size.width * 2)) }
+        m.engine = true
         let r = ImageRenderer(content: Panel(m: m, solid: true)); r.scale = 2
         if let img = r.nsImage { writePNG(img, args[2] + "/panel.png", px: Int(img.size.width * 2)) }
         // every look, with its lighting frozen mid-song

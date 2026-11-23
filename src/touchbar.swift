@@ -668,21 +668,38 @@ final class StripView: NSView {
     private func repaint() {
         guard bounds.width > 10 else { return }
         var s = state
-        // Ignition: for the first moment the gauges sweep to the top and settle, like a dash at key-on.
+        // Engine start: the gauges rev with Redline's needles (blip, blip, redline) and then settle on the real values.
         if sweep != nil {
-            let t = -sweepStart.timeIntervalSinceNow / 1.1
-            func swept(_ v: Double) -> Double { t < 0.45 ? sin(t / 0.45 * .pi / 2) : 1 + (v - 1) * (1 - pow(1 - min(1, (t - 0.45) / 0.55), 3)) }
+            let t = -sweepStart.timeIntervalSinceNow, r = StripView.rev(t)
+            func swept(_ v: Double) -> Double { t < StripView.revHold ? r : 1 + (v - 1) * (1 - pow(1 - min(1, (t - StripView.revHold) / (StripView.revEnd - StripView.revHold)), 3)) }
             s.volume = swept(s.volume); s.brightness = swept(s.brightness); s.keys = swept(s.keys); s.muted = false
         }
         if paintedTheme != Ink.index { if paintedTheme != -1 { buildRunners() }; paintedTheme = Ink.index; flow.colors = backdropColors(periods: 2).map { $0.cgColor } }
         baseLayer.contents = barImage(s, .base, size: bounds.size).cgImage
         glowLayer.contents = barImage(s, .glow, size: bounds.size).cgImage
     }
+    // The rev, in seconds from the push: (time, how far up). Redline's card needles follow the same blips.
+    static let revKeys: [(Double, Double)] = [(0, 0), (0.15, 0.42), (0.45, 0.10), (0.73, 0.70), (1.05, 0.22), (1.40, 1.0), (2.0, 1.0)]
+    static let revHold = 2.0, revEnd = 2.6
+    static func rev(_ t: Double) -> Double {
+        let k = revKeys
+        guard t > 0 else { return 0 }
+        for i in 1..<k.count where t <= k[i].0 {
+            let f = (t - k[i - 1].0) / (k[i].0 - k[i - 1].0), e = f * f * (3 - 2 * f)       // eased between blips
+            return k[i - 1].1 + (k[i].1 - k[i - 1].1) * e
+        }
+        return 1
+    }
+    var revving: Bool { sweep != nil }
+    /// Engine start: the gauges rev, and the whole bar dims and flares with each blip, then stays at full brightness.
     func ignite() {
-        sweep?.invalidate(); sweepStart = Date(); shine()
+        sweep?.invalidate(); sweepStart = Date()
         sweep = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] t in
             guard let s = self else { t.invalidate(); return }
-            if -s.sweepStart.timeIntervalSinceNow >= 1.1 { t.invalidate(); s.sweep = nil }
+            let e = -s.sweepStart.timeIntervalSinceNow
+            let light = CGFloat(e < StripView.revHold ? 0.12 + 0.88 * StripView.rev(e) : 1)
+            s.setGlow(light); s.setBackdrop(light)
+            if e >= StripView.revEnd { t.invalidate(); s.sweep = nil; s.setGlow(1); s.setBackdrop(1); s.shine() }
             s.repaint()
         }
     }
@@ -827,6 +844,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     }
     // With music the glow sits low and swells on the beat; in silence it rests at full brightness.
     func breathe() {
+        guard !strip.revving else { return }      // the engine-start rev owns the brightness for its two and a half seconds
         let r = pulse.running ? pulse.read() : (level: Float(0), quiet: 99)
         let target: CGFloat = r.quiet < 0.7 ? 0.22 + 0.78 * CGFloat(r.level) : 1
         glowNow += (target - glowNow) * (target > glowNow ? 0.6 : 0.25)
@@ -844,8 +862,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     @objc func show() {
         let fresh = !shown
         refresh(); NSTouchBar.presentSystemModalTouchBar(bar, placement: 1, systemTrayItemIdentifier: Self.trayID); shown = true; refresh()
-        if fresh { strip.ignite() }
+        // Only once per start, and only when Redline's push-to-start button was pressed: coming back from "app controls"
+        // or from sleep never revs again. Redline passes --norev when it starts the engine by itself.
+        if fresh, !revved { revved = true; if !CommandLine.arguments.contains("--norev") {
+            strip.ignite()
+            DistributedNotificationCenter.default().postNotificationName(Notification.Name("local.glowstrip.ignite"), object: nil, userInfo: nil, deliverImmediately: true)
+        } }
     }
+    var revved = false
     func hide() { NSTouchBar.minimizeSystemModalTouchBar(bar); shown = false; tend(); DFRElementSetControlStripPresenceForIdentifier(Self.trayID, true) }
     @objc func woke() { if shown { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.show() } } }
 

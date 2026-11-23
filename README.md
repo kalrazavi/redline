@@ -26,7 +26,10 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 
 ## Using it
 
-- Click the needle in the menu bar. Every needle sweeps to the top and settles.
+- Click the needle in the menu bar to open the card.
+- **Engine**: with the engine off the Mac is exactly as Apple made it (Apple's Touch Bar, macOS fans, normal sleep). Starting it brings back your last look, VIBE, NOS, fans and the Touch Bar. The power button in the card's header switches it off.
+- **START · AUTO / PUSH** (footer): AUTO starts the engine by itself when Redline loads, with no rev. PUSH (default) shows a push-to-start window instead; pressing it revs the needles and the Touch Bar (two blips, then the redline) and switches everything on. The rev happens only then, never when the card is merely opened.
+- At log-in Redline waits its turn: it starts once the session is 45 seconds old and the Mac has calmed down, at the latest after 2.5 minutes.
 - Drag the card by its background to move it. It has one fixed size.
 - Click anywhere outside the card, or press Esc, to close it.
 - **VIBE**: club lighting behind the dials, driven by whatever the Mac is playing: waves, a glow behind each dial, rings off the big dial on every kick, a strobe, and mirrored sparks that are released on the beat and rise higher when the music lifts. It listens only while the card is open and VIBE is on; the sound is not changed, stored or sent anywhere.
