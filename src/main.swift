@@ -8,6 +8,7 @@ import CoreWLAN
 import CoreAudio
 import AudioToolbox
 import Accelerate
+import CoreImage
 
 // Redline: a tuner-style gauge cluster for this Mac, living in the menu bar.
 // Everything is read locally from macOS. Nothing is sent anywhere.
@@ -523,6 +524,7 @@ enum DesktopWipe {
     }
     /// Done in the background when Redline starts, so the first NOS switch is as quick as the rest.
     static func warm() { DispatchQueue.global(qos: .utility).async { _ = picture(Boost.wallpaper); _ = picture(Boost.normalWallpaper) } }
+    static func forget() { lock.lock(); cache = [:]; lock.unlock() }
     static func run(from: String, to: String, up: Bool, colour: NSColor, set: () -> Void) {
         guard let old = picture(from), let new = picture(to) else { set(); return }
         windows.forEach { $0.orderOut(nil) }; windows = []
@@ -561,6 +563,70 @@ enum DesktopWipe {
         }
         set()
         DispatchQueue.main.asyncAfter(deadline: .now() + dur + 1.2) { windows.forEach { $0.orderOut(nil) }; windows = [] }      // macOS has finished its own fade underneath by then
+    }
+}
+
+// ---------- NOS wallpaper: whatever wallpaper is on this Mac, recoloured into NOS reds ----------
+// macOS draws the wallpaper in a window of its own, below the desktop icons and every app. Redline photographs only that window
+// (so no icons, windows or menu bar end up in it) and maps its light and dark onto the NOS palette: same shapes, NOS reds.
+// Made again by itself whenever the wallpaper is changed (checked every 30 seconds, only while NOS is off). Stays on this Mac.
+enum NOSPaint {
+    private static var timer: Timer?
+    static func start() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { check() }      // after start-up, once the desktop has settled
+        let t = Timer(timeInterval: 30, repeats: true) { _ in check() }; RunLoop.main.add(t, forMode: .common); timer = t
+    }
+    private static func check() {
+        let fm = FileManager.default
+        // only while the real wallpaper is showing: not during NOS, and not while the still copy stands in after NOS
+        guard !UserDefaults.standard.bool(forKey: "nos"), !fm.fileExists(atPath: Boost.wallStoreCopy) else { return }
+        let changed = (try? fm.attributesOfItem(atPath: Boost.wallStore)[.modificationDate] as? Date) ?? Date.distantPast
+        let screen = NSScreen.main.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? ""
+        let stamp = "\(Int(changed.timeIntervalSince1970)) \(screen)"
+        guard Date().timeIntervalSince(changed) > 10,       // a wallpaper that was just switched may still be fading in
+              stamp != UserDefaults.standard.string(forKey: "nosPaintStamp") || !fm.fileExists(atPath: Boost.wallpaper) || !fm.fileExists(atPath: Boost.normalWallpaper)
+        else { return }
+        DispatchQueue.global(qos: .utility).async {
+            guard let normal = wallpaperOnly(), let red = recolour(normal) else { return }
+            try? fm.createDirectory(atPath: (Boost.wallpaper as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            guard write(normal, Boost.normalWallpaper), write(red, Boost.wallpaper) else { return }
+            DesktopWipe.forget(); DesktopWipe.warm()
+            DispatchQueue.main.async { UserDefaults.standard.set(stamp, forKey: "nosPaintStamp") }
+        }
+    }
+    /// Only the wallpaper window of the main screen.
+    static func wallpaperOnly() -> CGImage? {
+        typealias Grab = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage"),
+              let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let size = NSScreen.main?.frame.size ?? .zero
+        let walls = list.filter { ($0[kCGWindowOwnerName as String] as? String) == "Dock" && (($0[kCGWindowName as String] as? String) ?? "").hasPrefix("Wallpaper") }
+        let main = walls.first { w in
+            guard let b = w[kCGWindowBounds as String] as? [String: CGFloat] else { return false }
+            return b["X"] == 0 && b["Y"] == 0 && b["Width"] == size.width && b["Height"] == size.height
+        } ?? walls.first
+        guard let id = main?[kCGWindowNumber as String] as? UInt32 else { return nil }
+        let grab = unsafeBitCast(sym, to: Grab.self)
+        return grab(.null, 8 /* this window only */, id, 1 | 8 /* no frame, best resolution */)?.takeRetainedValue()
+    }
+    /// Light and dark mapped onto the NOS palette: near black, deep red, NOS red, hot coral, pale pink.
+    static func recolour(_ img: CGImage) -> CGImage? {
+        let stops: [(Double, Double, Double)] = [(0.05, 0, 0.02), (0.35, 0.02, 0.07), (0.85, 0.08, 0.18), (1, 0.36, 0.36), (1, 0.80, 0.78)]
+        let w = 256; var px = [UInt8](repeating: 255, count: w * 4)
+        for i in 0..<w {
+            let t = Double(i) / Double(w - 1) * Double(stops.count - 1), a = min(Int(t), stops.count - 2), f = t - Double(a), c0 = stops[a], c1 = stops[a + 1]
+            px[i * 4] = UInt8(255 * (c0.0 + (c1.0 - c0.0) * f)); px[i * 4 + 1] = UInt8(255 * (c0.1 + (c1.1 - c0.1) * f)); px[i * 4 + 2] = UInt8(255 * (c0.2 + (c1.2 - c0.2) * f))
+        }
+        let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ramp = CIImage(bitmapData: Data(px), bytesPerRow: w * 4, size: CGSize(width: w, height: 1), format: .RGBA8, colorSpace: srgb)
+        guard let map = CIFilter(name: "CIColorMap") else { return nil }
+        map.setValue(CIImage(cgImage: img), forKey: kCIInputImageKey); map.setValue(ramp, forKey: "inputGradientImage")
+        guard let out = map.outputImage else { return nil }
+        return CIContext().createCGImage(out, from: CGRect(x: 0, y: 0, width: img.width, height: img.height), format: .RGBA8, colorSpace: srgb)
+    }
+    private static func write(_ img: CGImage, _ path: String) -> Bool {
+        guard let data = NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:]) else { return false }
+        return (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
     }
 }
 
@@ -2191,6 +2257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onRedline = { [weak self] in self?.backdrop.flash() }
         model.willNOS = { [weak self] on in self?.nosTransition(on) }
         DesktopWipe.warm()
+        NOSPaint.start()
         model.onPush = { [weak self] in self?.push() }
         model.start()
         // The Touch Bar part says when its rev begins, so the needles blip at the same moment. Local to this Mac.
