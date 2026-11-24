@@ -670,6 +670,27 @@ final class StripView: NSView {
     /// How strongly the backdrop shines, 0...1.
     func setBackdrop(_ v: CGFloat) { if abs(CGFloat(backdrop.opacity) - v) > 0.004 { backdrop.opacity = Float(v) } }
     /// A band of light glides across the glass once, like a streetlight passing over paint.
+    /// The NOS switch on the strip: a hot red band races left to right (in), or a cool band in the underglow colour
+    /// drifts back right to left (out). One pass, then the layer is removed.
+    func boost(_ on: Bool, colour: NSColor) {
+        guard bounds.width > 10, let root = layer else { return }
+        let band = CAGradientLayer(); band.startPoint = CGPoint(x: 0, y: 0.5); band.endPoint = CGPoint(x: 1, y: 0.5)
+        band.colors = [colour.withAlphaComponent(0), colour.withAlphaComponent(0.85), (colour.blended(withFraction: 0.6, of: .white) ?? .white), colour.withAlphaComponent(0.85), colour.withAlphaComponent(0)].map { $0.cgColor }
+        band.locations = [0, 0.4, 0.5, 0.6, 1]; band.zPosition = 50
+        band.bounds = CGRect(x: 0, y: 0, width: 260, height: bounds.height + 4); band.setAffineTransform(CGAffineTransform(a: 1, b: 0, c: 0.55, d: 1, tx: 0, ty: 0))
+        let tint = CALayer(); tint.frame = bounds; tint.backgroundColor = colour.cgColor; tint.opacity = 0; tint.zPosition = 49
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        band.position = CGPoint(x: on ? -200 : bounds.width + 200, y: bounds.midY); root.addSublayer(tint); root.addSublayer(band)
+        CATransaction.commit()
+        let d: CFTimeInterval = on ? 0.7 : 0.85      // same timing as Redline's card and desktop; the colour is the look being switched to
+        let a = CABasicAnimation(keyPath: "position.x"); a.fromValue = on ? -200 : bounds.width + 200; a.toValue = on ? bounds.width + 200 : -200
+        a.beginTime = CACurrentMediaTime() + 0.2      // lines up with Redline's shared start moment
+        a.duration = d; a.timingFunction = on ? CAMediaTimingFunction(controlPoints: 0.5, 0, 0.2, 1) : CAMediaTimingFunction(controlPoints: 0.3, 0, 0.25, 1); a.fillMode = .both; a.isRemovedOnCompletion = false
+        band.add(a, forKey: "race")
+        let f = CAKeyframeAnimation(keyPath: "opacity"); f.values = [0, 0.22, 0]; f.keyTimes = [0, 0.6, 1]; f.duration = d + 0.3; f.beginTime = CACurrentMediaTime() + 0.2
+        f.fillMode = .both; f.isRemovedOnCompletion = false; tint.add(f, forKey: "tint")
+        DispatchQueue.main.asyncAfter(deadline: .now() + d + 0.7) { band.removeFromSuperlayer(); tint.removeFromSuperlayer() }
+    }
     func shine() {
         guard bounds.width > 10 else { return }
         let a = CABasicAnimation(keyPath: "position.x"); a.fromValue = -120; a.toValue = bounds.width + 120; a.duration = 1.5
@@ -808,7 +829,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
         DistributedNotificationCenter.default().addObserver(forName: Notification.Name("local.redline.theme"), object: nil, queue: .main) { [weak self] n in
             let u = n.userInfo ?? [:]
             let on = (u["vibe"] as? Bool) ?? false
+            let wasNOS = Ink.theme == 8
             Ink.theme = Ink.look(glow: (u["glow"] as? Int) ?? 0, vibe: on, nos: (u["nos"] as? Bool) ?? false)
+            if let s = self, s.shown, wasNOS != (Ink.theme == 8) {      // NOS switched: one pass across the strip
+                s.strip.boost(Ink.theme == 8, colour: Ink.theme == 8 ? Ink.red : Ink.glow)
+            }
             // Redline's VIBE switch is also the music switch here: off = the still ice look, on = it moves with the music again.
             if let s = self, s.vibe != on { s.vibe = on; UserDefaults.standard.set(on, forKey: "vibe"); s.restAfter = .distantPast }
             self?.themed()

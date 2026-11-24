@@ -6,7 +6,7 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 
 ---
 
-## v1.8 · 24 Nov 2026 · NOS: full power, nothing spent on looks
+## v1.8 · 24 Nov 2026 · NOS: full power, nothing spent on looks, and a battery you can read at a glance
 `9bd57d8`
 
 ### Changed
@@ -18,6 +18,9 @@ Dates are when the change went live. Commit IDs link each entry to the code.
   - **No more light show.** The overdrive beams, strobe, sparks, heartbeat and flash cost 20-30 % CPU with the card open. NOS is now still: plain red card, red Touch Bar with no blinking or runner lights, no music listening.
   - **The whole Mac in NOS red:** red accent and highlight colour, and my own blue Sequoia wallpaper recoloured into NOS reds (same shapes and light rays, dark reds to hot red).
   - Everything is put back when NOS goes off, when Redline quits, or at the next start after a crash.
+  - **Going in and out of NOS is animated**, on the card, the desktop and the Touch Bar at the same moment: in, a red-hot line sweeps up and the red fills in behind it, a shockwave leaves the big dial and the needles slam to the redline; out, the line wipes back down to the normal colours.
+- **The battery tile is ten cells.** Plugged in they are calm green; while charging the next cell breathes and a soft sheen glides across the charge. On battery they stand still, and at 15 % or less they turn red and the last cells blink. The preview pictures show the cells too.
+- **With VIBE off the waves keep rolling**, low and slow in the look's colours; the rest of the light show only runs with VIBE on.
 - The admin helper's Low Power Mode switch is used by NOS too (to switch it off).
 
 ### Fixed
@@ -26,6 +29,15 @@ Dates are when the change went live. Commit IDs link each entry to the code.
   Cause: my wallpaper is Apple's live Sequoia wallpaper, which macOS draws in 3D. Asked which picture is on the desktop, macOS answers with a placeholder file (the forest), and Redline put that back.
   Fix: Redline now saves macOS's own wallpaper settings before NOS changes anything and restores exactly those afterwards. Tested: NOS on shows the red wallpaper, NOS off brings the live blue one back.
 - **The first red wallpaper looked bad.** It was a flat red gradient I had not asked for. It is now made from my own wallpaper, recoloured.
+- **Leaving NOS turned the desktop grey for a moment.**
+  Cause: two things. The fade mixed cyan over red, which comes out grey, and restarting macOS's wallpaper process blanks the desktop for a frame.
+  Fix: the new colours now lie under the old ones instead of being mixed, and the desktop wipes to a still copy of my wallpaper; the live one is quietly put back the next time the screen sleeps or Redline starts.
+- **Leaving NOS stuck for a few seconds, the menu bar most of all.**
+  Cause: the card was photographed the slow way before the animation, the wallpaper pictures were loaded at that moment, and the card redrew itself before the animation was handed over.
+  Fix: macOS takes the snapshot, the pictures are loaded once at start-up, and the animation is handed over first. It now starts within a twentieth of a second.
+- **The card, desktop and Touch Bar animated one after another.** They now share one start time.
+- **The battery tile looked alarming while charging.** It was red because the level was low, even though the charger was in. Red and blinking now only happen on battery. A Mac that is plugged in but losing charge (my 60 W charger at full fans) shows PLUGGED IN with the drain, not HELD.
+- **With VIBE off, the old light show stayed behind the dials.** Changing the underglow kept showing the previous look's frozen lights until VIBE came back on. A first fix made the whole card see-through, which I did not want; that was reversed. The card keeps its dark base and only the light-show layers stop.
 
 ### Not possible
 - Overclocking: the i7-9750H is locked. Turbo Boost is on by default, and maximum fans keep it boosting longer.

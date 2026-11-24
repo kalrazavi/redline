@@ -483,6 +483,87 @@ enum Eco {
     }
 }
 
+/// One timing for every part of the NOS switch (card, desktop, needles), so they move together.
+enum NOSMove {
+    /// The shared moment everything starts moving: set at the click, a fraction later so the big wallpaper pictures are loaded by then.
+    static var start: CFTimeInterval = 0
+    /// Each part (card, desktop) prepares its layers and leaves its animations here; go() starts them all at one moment.
+    static var pending: [(CFTimeInterval) -> Void] = []
+    /// Starts everything together and hands it to macOS at once, so it keeps moving smoothly even while Redline
+    /// is busy redrawing the card in the new look.
+    static func go() {
+        start = CACurrentMediaTime() + 0.03
+        let all = pending; pending = []
+        all.forEach { $0(start) }
+        CATransaction.flush()
+    }
+    static func duration(_ into: Bool) -> CFTimeInterval { into ? 0.7 : 0.85 }
+    static func ease(_ into: Bool) -> CAMediaTimingFunction { into ? CAMediaTimingFunction(controlPoints: 0.5, 0, 0.2, 1) : CAMediaTimingFunction(controlPoints: 0.3, 0, 0.25, 1) }
+}
+
+// ---------- The desktop's part of the NOS switch ----------
+// macOS only crossfades wallpapers. For NOS, a borderless window just above the desktop picture (below the desktop icons and all
+// windows) holds the old wallpaper while the new one is set underneath, then a glowing line wipes the old one away, the same move
+// as on the card: up in red going into NOS, down in your underglow colour coming out. About a second, then the window is gone.
+enum DesktopWipe {
+    private static var windows: [NSWindow] = []
+    private static var cache: [String: CGImage] = [:]
+    private static let lock = NSLock()
+    /// The wallpaper pictures, fully decoded once and kept (decoding two full-screen pictures at the switch took a fifth of a second).
+    static func picture(_ path: String) -> CGImage? {
+        lock.lock(); if let c = cache[path] { lock.unlock(); return c }; lock.unlock()
+        guard let src = NSImage(contentsOfFile: path)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              // in the screen's own colour space and pixel order, so macOS can show it without converting it first
+              let ctx = CGContext(data: nil, width: src.width, height: src.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: NSScreen.main?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        ctx.draw(src, in: CGRect(x: 0, y: 0, width: src.width, height: src.height))
+        guard let img = ctx.makeImage() else { return nil }
+        lock.lock(); cache[path] = img; lock.unlock(); return img
+    }
+    /// Done in the background when Redline starts, so the first NOS switch is as quick as the rest.
+    static func warm() { DispatchQueue.global(qos: .utility).async { _ = picture(Boost.wallpaper); _ = picture(Boost.normalWallpaper) } }
+    static func run(from: String, to: String, up: Bool, colour: NSColor, set: () -> Void) {
+        guard let old = picture(from), let new = picture(to) else { set(); return }
+        windows.forEach { $0.orderOut(nil) }; windows = []
+        let dur = NOSMove.duration(up)      // exactly the card's timing, so both move as one
+        for sc in NSScreen.screens {
+            let f = sc.frame
+            let w = NSWindow(contentRect: f, styleMask: .borderless, backing: .buffered, defer: false)
+            w.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)) + 1)
+            w.isOpaque = false; w.backgroundColor = .clear; w.ignoresMouseEvents = true; w.hasShadow = false
+            w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+            let v = NSView(frame: NSRect(origin: .zero, size: f.size)); v.wantsLayer = true; w.contentView = v
+            guard let root = v.layer else { continue }
+            let b = v.bounds
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            // the new picture underneath (carried here, so the wipe never waits for macOS), the old one on top being cut away
+            let under = CALayer(); under.frame = b; under.contents = new; under.contentsGravity = .resizeAspectFill; under.masksToBounds = true; root.addSublayer(under)
+            let pic = CALayer(); pic.frame = b; pic.contents = old; pic.contentsGravity = .resizeAspectFill; pic.masksToBounds = true
+            let cut = CALayer(); cut.backgroundColor = NSColor.white.cgColor
+            cut.anchorPoint = up ? CGPoint(x: 0.5, y: 1) : CGPoint(x: 0.5, y: 0); cut.bounds = b
+            cut.position = up ? CGPoint(x: b.midX, y: b.maxY) : CGPoint(x: b.midX, y: 0)
+            pic.mask = cut; root.addSublayer(pic)
+            let lineH = b.height * 0.16
+            let line = CAGradientLayer(); line.bounds = CGRect(x: 0, y: 0, width: b.width, height: lineH); line.position = CGPoint(x: b.midX, y: up ? -lineH / 2 : b.maxY + lineH / 2)
+            line.colors = [colour.withAlphaComponent(0), colour.withAlphaComponent(0.5), NSColor.white.withAlphaComponent(0.9), colour.withAlphaComponent(0.5), colour.withAlphaComponent(0)].map { $0.cgColor }
+            line.locations = [0, 0.42, 0.5, 0.58, 1]; root.addSublayer(line)
+            CATransaction.commit()
+            w.orderFront(nil); windows.append(w)
+            let ease = NOSMove.ease(up)
+            NOSMove.pending.append { start in
+            let c = CABasicAnimation(keyPath: "bounds.size.height"); c.fromValue = b.height; c.toValue = 0
+            let l = CABasicAnimation(keyPath: "position.y"); l.fromValue = up ? -lineH / 2 : b.maxY + lineH / 2; l.toValue = up ? b.maxY + lineH / 2 : -lineH / 2
+            for (a, layer, key) in [(c, cut as CALayer, "cut"), (l, line as CALayer, "line")] {
+                a.duration = dur; a.beginTime = start; a.timingFunction = ease; a.fillMode = .both; a.isRemovedOnCompletion = false; layer.add(a, forKey: key)
+            }
+            }
+        }
+        set()
+        DispatchQueue.main.asyncAfter(deadline: .now() + dur + 1.2) { windows.forEach { $0.orderOut(nil) }; windows = [] }      // macOS has finished its own fade underneath by then
+    }
+}
+
 // ---------- NOS boost: everything at full power, nothing spent on looks ----------
 // While NOS is on: Low Power Mode off, screen and keyboard light at maximum, App Nap off (apps started from now on are never
 // slowed down in the background), and the Mac dressed in the NOS red (wallpaper, accent and highlight
@@ -492,6 +573,23 @@ enum Boost {
     static let wallpaper = NSHomeDirectory() + "/Library/Application Support/Redline/nos-wallpaper.png"
     static let wallStore = NSHomeDirectory() + "/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
     static let wallStoreCopy = NSHomeDirectory() + "/Library/Application Support/Redline/wallpaper-before-nos.plist"
+    /// A still copy of the normal wallpaper. Leaving NOS fades to it (smooth, like going in) instead of restarting macOS's wallpaper
+    /// service, which shows a flat grey desktop for a moment. The live wallpaper itself comes back unseen the next time the screen sleeps.
+    static let normalWallpaper = NSHomeDirectory() + "/Library/Application Support/Redline/wallpaper-normal.png"
+    private static var watching = false
+    static func leaveWallpaper() {
+        guard FileManager.default.fileExists(atPath: wallStoreCopy) else { return }
+        guard FileManager.default.fileExists(atPath: normalWallpaper) else { restoreWallpaper(); return }
+        DesktopWipe.run(from: wallpaper, to: normalWallpaper, up: false, colour: NSColor(Ink.glows[Ink.glow])) {
+            for sc in NSScreen.screens { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: normalWallpaper), for: sc, options: [:]) }
+        }
+        guard !watching else { return }
+        watching = true
+        let ws = NSWorkspace.shared.notificationCenter
+        for n in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            ws.addObserver(forName: n, object: nil, queue: .main) { _ in if !(UserDefaults.standard.bool(forKey: "nos")) { restoreWallpaper() } }
+        }
+    }
     /// Puts the saved wallpaper store back and has macOS reload it.
     static func restoreWallpaper() {
         guard let data = FileManager.default.contents(atPath: wallStoreCopy) else { return }
@@ -521,7 +619,10 @@ enum Boost {
     static func engage() {
         Eco.brightness = 1; Eco.keys = 1
         setGlobal("AppleAccentColor", 0); setGlobal("AppleHighlightColor", "1.000000 0.733333 0.721569 Red"); setGlobal("NSAppSleepDisabled", true); colourChanged()
-        if FileManager.default.fileExists(atPath: wallpaper) { for sc in NSScreen.screens { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: wallpaper), for: sc, options: [:]) } }
+        if FileManager.default.fileExists(atPath: wallpaper) {
+            let set = { for sc in NSScreen.screens { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: wallpaper), for: sc, options: [:]) } }
+            if FileManager.default.fileExists(atPath: normalWallpaper) { DesktopWipe.run(from: normalWallpaper, to: wallpaper, up: true, colour: NSColor(Ink.nos), set: set) } else { set() }
+        }
         DispatchQueue.global(qos: .userInitiated).async { if Eco.lowPower { Eco.setLowPower(false) } }
     }
     /// Never dimmed: macOS's automatic brightness, "dim on battery" and the keyboard light's idle fade all try to lower them,
@@ -538,7 +639,7 @@ enum Boost {
         if let v = b["keys"] as? Double, v >= 0 { Eco.keys = Float(v) }
         for k in ["AppleAccentColor", "AppleHighlightColor", "NSAppSleepDisabled"] { setGlobal(k, b[k]) }      // absent before = removed again
         colourChanged()
-        restoreWallpaper()
+        if wait { restoreWallpaper() } else { leaveWallpaper() }      // quitting: put the live one straight back
         if (b["lowPower"] as? Bool) ?? false { if wait { Eco.setLowPower(true) } else { DispatchQueue.global(qos: .userInitiated).async { Eco.setLowPower(true) } } }
     }
 }
@@ -603,7 +704,13 @@ final class Model: ObservableObject {
     private var rec: [Double] = Model.savedRecords()
     static func savedRecords() -> [Double] { (UserDefaults.standard.array(forKey: "records") as? [Double]).flatMap { $0.count == 3 ? $0 : nil } ?? [0, 0, 0] }
     func resetRecords() { rec = [0, 0, 0]; records = rec; UserDefaults.standard.set(rec, forKey: "records") }
-    var onNOS: (() -> Void)?
+    var onNOS: (() -> Void)?, willNOS: ((Bool) -> Void)?
+    /// The needles' part of the NOS switch: in = slammed to the redline and back, out = they drop and settle.
+    func kick(_ on: Bool) {
+        let keys: [(Double, Double?)] = on ? [(0.0, 0.35), (0.12, 1.0), (0.55, nil)] : [(0.0, 0.0), (0.7, nil)]
+        let lead = max(0, NOSMove.start - CACurrentMediaTime())
+        for (t, v) in keys { DispatchQueue.main.asyncAfter(deadline: .now() + lead + t) { guard self.engine, !self.cranking else { return }; self.rev = v } }
+    }
     // ---- NOS and the optional Coffee Mode app ----
     // Redline keeps the Mac awake by itself. If the separate Coffee Mode app is also on this Mac, Redline keeps that app's switch
     // (and its running cup) in step, and follows it when the switch is flipped there. Neither app needs the other.
@@ -616,10 +723,14 @@ final class Model: ObservableObject {
     /// Switches NOS. Call on the main thread.
     func setNOS(_ on: Bool, tellCoffee: Bool = true) {
         guard on != nos else { return }
+        NOSMove.pending = []
+        willNOS?(on)                      // the card takes its "before" picture for the transition
         if on, eco { setECO(false) }
         if !silent { if on { awake.on(); Boost.remember(); Boost.engage() } else { awake.off(); Boost.restore() } }
+        NOSMove.go()                      // card, desktop and needles all start moving now, together
         nos = on
         if on { onNOS?() }
+        if engine, !silent { kick(on) }
         if tellCoffee, !silent { syncCoffee(on) }
     }
     func toggleNOS() { setNOS(!nos) }
@@ -700,7 +811,8 @@ final class Model: ObservableObject {
     func start() {
         schedule(2.0); applyFans()
         if !silent, UserDefaults.standard.dictionary(forKey: "ecoBefore") != nil { Eco.restore() }      // Redline stopped during ECO: undo it now
-        if !silent, UserDefaults.standard.dictionary(forKey: "nosBefore") != nil { Boost.restore() }    // same for NOS
+        if !silent, UserDefaults.standard.dictionary(forKey: "nosBefore") != nil { Boost.restore(wait: true) }    // same for NOS
+        else if !silent { Boost.restoreWallpaper() }       // a live wallpaper still waiting to come back after NOS (no-op otherwise)
         if !silent { UserDefaults.standard.set(false, forKey: "eco"); announce() }
     }      // engine still off: the fans go (or stay) with macOS
     private func schedule(_ every: Double) {
@@ -1008,6 +1120,86 @@ struct Bar: View {
     }
 }
 
+/// The battery bar as ten cells, drawn with Core Animation so its motion costs nothing on the CPU.
+///   charging: calm green cells, the next cell to fill breathes slowly, and a soft sheen glides across the charge (2.8 s)
+///   plugged in, not charging (held by a charge limit): calm green, still
+///   on battery: green cells, still; at 15 % or less they turn red and the last cells blink like a warning light
+struct ChargeBar: NSViewRepresentable {
+    enum Mode: Equatable { case charging, held, battery, low }
+    var value: Double; var mode: Mode
+    func makeNSView(context: Context) -> ChargeBarView { ChargeBarView() }
+    func updateNSView(_ v: ChargeBarView, context: Context) { v.set(value: value, mode: mode) }
+}
+/// The same ten cells, still, in plain SwiftUI: only for the preview pictures, which cannot draw the live bar.
+struct ChargeCells: View {
+    var value: Double; var mode: ChargeBar.Mode
+    var body: some View {
+        let filled = max(mode == .low ? 1 : 0, min(10, Int((value * 10).rounded(.up))))
+        let c = mode == .low ? Ink.red : Ink.green
+        HStack(spacing: 3) {
+            ForEach(0..<10, id: \.self) { i in
+                Capsule().fill(i < filled ? AnyShapeStyle(LinearGradient(colors: [c.opacity(0.8), c], startPoint: .top, endPoint: .bottom))
+                                          : AnyShapeStyle(Color.white.opacity(i == filled && mode == .charging ? 0.3 : 0.08)))
+                    .shadow(color: i < filled && mode != .battery ? c.opacity(0.55) : .clear, radius: 3)
+            }
+        }
+    }
+}
+final class ChargeBarView: NSView {
+    private var key = ""; private var value = 0.0; private var mode = ChargeBar.Mode.battery
+    private let cells = 10
+    override init(frame: NSRect) { super.init(frame: frame); wantsLayer = true }
+    required init?(coder: NSCoder) { fatalError() }
+    func set(value: Double, mode: ChargeBar.Mode) { self.value = value; self.mode = mode; needsLayout = true }
+    override func layout() {
+        super.layout()
+        let filled = max(mode == .low ? 1 : 0, min(cells, Int((value * Double(cells)).rounded(.up))))
+        let k = "\(filled) \(mode) \(Int(bounds.width)) \(Int(bounds.height))"
+        guard k != key, bounds.width > 20, let root = layer else { return }
+        key = k
+        root.sublayers?.forEach { $0.removeFromSuperlayer() }
+        let h: CGFloat = 6, gap: CGFloat = 3, y: CGFloat = 0
+        let w = (bounds.width - gap * CGFloat(cells - 1)) / CGFloat(cells)
+        let green = NSColor(Ink.green), red = NSColor(Ink.red)
+        let base = mode == .low ? red : green
+        let charge = CALayer(); charge.frame = bounds; root.addSublayer(charge)      // holds the filled cells, so the sheen stays inside them
+        let mask = CALayer(); mask.frame = bounds; charge.mask = mask
+        for i in 0..<cells {
+            let r = CGRect(x: CGFloat(i) * (w + gap), y: y, width: w, height: h)
+            let empty = CALayer(); empty.frame = r; empty.cornerRadius = h / 2; empty.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+            root.insertSublayer(empty, below: charge)
+            if i < filled {
+                let c = CAGradientLayer(); c.frame = r; c.cornerRadius = h / 2
+                c.colors = [base.blended(withFraction: 0.25, of: .white)!.cgColor, base.cgColor]; c.startPoint = CGPoint(x: 0.5, y: 1); c.endPoint = CGPoint(x: 0.5, y: 0)
+                c.shadowColor = base.cgColor; c.shadowRadius = 3; c.shadowOpacity = mode == .battery ? 0 : 0.55; c.shadowOffset = .zero
+                charge.addSublayer(c)
+                let m = CALayer(); m.frame = r.insetBy(dx: -1, dy: -4); m.backgroundColor = NSColor.white.cgColor; mask.addSublayer(m)
+                if mode == .low, i >= filled - 2 {        // the warning: the last cells blink
+                    let a = CABasicAnimation(keyPath: "opacity"); a.fromValue = 1; a.toValue = 0.15; a.duration = 0.45
+                    a.autoreverses = true; a.repeatCount = .infinity; a.timingFunction = CAMediaTimingFunction(name: .easeIn); c.add(a, forKey: "warn")
+                }
+            } else if i == filled, mode == .charging {      // the next cell to fill, breathing in slowly
+                let n = CALayer(); n.frame = r; n.cornerRadius = h / 2; n.backgroundColor = green.cgColor
+                n.shadowColor = green.cgColor; n.shadowRadius = 4; n.shadowOpacity = 0.8; n.shadowOffset = .zero
+                let a = CABasicAnimation(keyPath: "opacity"); a.fromValue = 0.08; a.toValue = 0.75; a.duration = 1.4
+                a.autoreverses = true; a.repeatCount = .infinity; a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut); n.add(a, forKey: "breathe")
+                root.addSublayer(n)
+            }
+        }
+        if mode == .charging, filled > 0 {      // a soft light gliding across the charge, left to right, again and again
+            let end = CGFloat(filled) * (w + gap)
+            let sheen = CAGradientLayer(); sheen.bounds = CGRect(x: 0, y: 0, width: 46, height: h + 8); sheen.position = CGPoint(x: -30, y: h / 2)
+            sheen.startPoint = CGPoint(x: 0, y: 0.5); sheen.endPoint = CGPoint(x: 1, y: 0.5)
+            sheen.colors = [NSColor.white.withAlphaComponent(0).cgColor, NSColor.white.withAlphaComponent(0.75).cgColor, NSColor.white.withAlphaComponent(0).cgColor]
+            charge.addSublayer(sheen)
+            let a = CABasicAnimation(keyPath: "position.x"); a.fromValue = -30; a.toValue = end + 30; a.duration = 1.6
+            a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            let g = CAAnimationGroup(); g.animations = [a]; g.duration = 2.8; g.repeatCount = .infinity      // 1.6 s glide, 1.2 s rest
+            sheen.add(g, forKey: "glide")
+        }
+    }
+}
+
 // ---------- The panel ----------
 struct Panel: View {
     @ObservedObject var m: Model
@@ -1221,10 +1413,16 @@ struct Panel: View {
                      sub: s.plugged ? "CHARGER \(s.adapterW) W" : "ON BATTERY", tint: s.plugged ? Ink.green : .white) { Spark(data: m.hIn, color: Ink.green, floor: 20) }
                 Tile(title: "SYSTEM DRAW", big: w(s.sysW ?? (s.plugged ? nil : abs(s.battW))), unit: "W",
                      sub: "CPU \(w(s.cpuW)) · GPU \(w(s.gpuW))", tint: Ink.amber) { Spark(data: m.hSys, color: Ink.amber, floor: 20) }
+                // Plugged in = calm and green, whatever the level. Only on battery does a low level turn red and blink.
+                let mode: ChargeBar.Mode = s.plugged ? (s.charging || s.battW > 0.2 ? .charging : .held) : (s.battPct <= 15 ? .low : .battery)
                 Tile(title: "BATTERY", big: s.hasBattery ? String(format: "%02d", s.battPct) : "--", unit: "%",
-                     sub: String(format: "%@%.1f W · %.0f%% HEALTH", s.battW >= 0 ? "+" : "−", abs(s.battW), s.health * 100),
-                     tint: s.battPct <= 15 ? Ink.red : .white) { Bar(value: v(Double(s.battPct) / 100), color: s.battPct <= 15 ? Ink.red : Ink.green) }
-                    .help(String(format: "%d charge cycles · battery %.0f °C", s.cycles, s.battTemp))
+                     sub: mode == .charging ? String(format: "CHARGING · +%.1f W", abs(s.battW)) : mode == .held ? (s.battW < -0.5 ? String(format: "PLUGGED IN · −%.1f W", abs(s.battW)) : "PLUGGED IN")
+                          : String(format: "%@%.1f W · %.0f%% HEALTH", s.battW >= 0 ? "+" : "−", abs(s.battW), s.health * 100),
+                     tint: s.plugged ? Ink.green : (mode == .low ? Ink.red : .white)) {
+                    if m.silent { ChargeCells(value: Double(s.battPct) / 100, mode: mode).frame(height: 6).frame(maxHeight: .infinity, alignment: .bottom) }      // preview pictures cannot draw the live bar
+                    else { ChargeBar(value: Double(s.battPct) / 100, mode: mode).frame(height: 6).frame(maxHeight: .infinity, alignment: .bottom) }
+                }
+                    .help(String(format: "%d charge cycles · %.0f%% health · battery %.0f °C", s.cycles, s.health * 100, s.battTemp))
                 Tile(title: s.fanForced ? "THERMALS · FANS MAX" : "THERMALS", big: s.cpuTemp.map { String(format: "%.0f", $0) } ?? "--", unit: "°C",
                      sub: "GPU \(s.gpuTemp.map { String(format: "%.0f°", $0) } ?? "--") · LIMIT \(s.speedLimit)%",
                      tint: (s.cpuTemp ?? 0) >= 90 ? Ink.red : .white) {
@@ -1820,6 +2018,42 @@ final class Backdrop: NSView {
             l.add(g, forKey: "ring"); CATransaction.commit()
         }
     }
+    /// Back to silence, so the next time VIBE comes on nothing from before is left over.
+    func reset() { for i in heights.indices { for j in heights[i].indices { heights[i][j] = 0 } } }
+    /// What shows behind the dials: 0 = the look's full light show (VIBE on), 1 = only a slow, calm wave (VIBE off),
+    /// 2 = only the card's plain dark base (NOS, ECO, engine off). Every other layer of every look is hidden.
+    private var mode = 0
+    func quiet(_ q: Bool) { show(q ? 2 : 0) }
+    private func show(_ m: Int) {
+        guard m != mode else { return }
+        mode = m; reset()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        if m == 0 { for l in layer?.sublayers ?? [] { l.isHidden = false } }
+        if m != 2 { recolor(force: true) }      // re-apply this look's colours and which layers it uses
+        if m != 0 { hideAllButWave() }
+        CATransaction.commit()
+    }
+    private func hideAllButWave() { for l in layer?.sublayers ?? [] where l !== grad { l.isHidden = mode == 2 || l !== waveBox } }
+    /// VIBE off: the waves keep rolling gently on their own, low and slow, in the look's colours. No music, no lights.
+    func idle() {
+        show(1)
+        recolor()
+        let t = CACurrentMediaTime(), n = Backdrop.points
+        let gain: [CGFloat] = [1.15, 0.92, 0.68], speed: [Double] = [0.35, 0.5, 0.7]
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        hideAllButWave()
+        for i in 0..<3 {
+            for j in 0..<n {
+                let x = Double(j) / Double(n - 1), taper = CGFloat(sin(x * .pi))           // both edges rest on the baseline
+                let v = 0.07 + 0.03 * sin(t * speed[i] + x * 5 + Double(i)) + 0.02 * sin(t * speed[i] * 1.6 - x * 9)
+                heights[i][j] += (CGFloat(v) * taper - heights[i][j]) * 0.08
+            }
+            masks[i].path = curve(heights[i], gain: gain[i], closed: true)
+        }
+        let line = curve(heights[2], gain: gain[2], closed: false); masks[3].path = line; masks[4].path = line
+        waveBox.opacity = 0.55
+        CATransaction.commit()
+    }
     func set(_ levels: [Float], wave: [Float] = []) {
         recolor()
         let L = look
@@ -1929,7 +2163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backdrop = Backdrop(frame: .zero)
     private let tap = AudioTap(); private var beat: Timer?
     private var lastStep = -1; private var rows = -1; private var sig: DispatchSourceSignal?; private var termSig: DispatchSourceSignal?; private var nosSig: DispatchSourceSignal?; private var hupSig: DispatchSourceSignal?; private var ecoSig: DispatchSourceSignal?
-    private var outside: Any?; private var keys: Any?; private var lit = false
+    private var outside: Any?; private var keys: Any?
     private let sticky = ProcessInfo.processInfo.environment["REDLINE_STICKY"] != nil   // testing only: stay open
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -1954,11 +2188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for v in [backdrop, host.view] as [NSView] { v.frame = box.bounds; v.autoresizingMask = [.width, .height]; box.addSubview(v) }
         card.contentView = box
         model.onTick = { [weak self] in self?.redraw($0) }
-        model.onNOS = { [weak self] in self?.lit = true }      // no flash: the backdrop just goes dark and still
-        model.onECO = { [weak self] on in if on { self?.lit = true } }      // lets the backdrop fade out once
         model.onRedline = { [weak self] in self?.backdrop.flash() }
+        model.willNOS = { [weak self] on in self?.nosTransition(on) }
+        DesktopWipe.warm()
         model.onPush = { [weak self] in self?.push() }
-        model.onEngine = { [weak self] on in if !on { self?.lit = true } }       // lets the backdrop fade out once
         model.start()
         // The Touch Bar part says when its rev begins, so the needles blip at the same moment. Local to this Mac.
         DistributedNotificationCenter.default().addObserver(forName: Notification.Name("local.glowstrip.ignite"), object: nil, queue: .main) { [weak self] _ in self?.ignited() }
@@ -2008,7 +2241,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastStep = step
         item.button?.image = BarIcon.image(load: load, hot: load >= 0.85)
     }
-    /// 30 times a second while the card is open: move the lights with the music (VIBE) and/or the NOS overdrive pulse.
+    // ---- NOS in / out ----
+    /// A one-off transition, about a second, then nothing keeps running (NOS spends nothing on looks).
+    /// In: a shockwave leaves the big dial, a red-hot line sweeps up the card and the NOS look fills in behind it, the needles slam to the redline.
+    /// Out: the line comes back down in your underglow colour, cooling the card back to your look, and the needles drop and settle.
+    /// Redline's own window as a picture, from the window server. (The call is hidden from new SDKs but still in macOS; an app
+    /// may always picture its own windows, no permission needed.) Falls back to drawing the layer tree if it is not there.
+    private func windowPicture(_ id: CGWindowID) -> CGImage? {
+        typealias Call = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let f = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }      // RTLD_DEFAULT
+        // .null rect, optionIncludingWindow (8), boundsIgnoreFraming (1) | bestResolution (8)
+        return unsafeBitCast(f, to: Call.self)(CGRect.null, 8, id, 1 | 8)?.takeRetainedValue()
+    }
+    private func layerPicture(_ root: CALayer, _ size: CGSize) -> CGImage? {
+        let px = card.backingScaleFactor
+        guard let ctx = CGContext(data: nil, width: Int(size.width * px), height: Int(size.height * px), bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.scaleBy(x: px, y: px); root.render(in: ctx); return ctx.makeImage()
+    }
+    private func nosTransition(_ on: Bool) {
+        guard card.isVisible, let box = card.contentView, let root = box.layer, box.bounds.width > 10 else { return }
+        // the card as it looks right now, before the switch redraws it
+        // straight from the window server (a few milliseconds; drawing the layer tree again took about a third of a second)
+        let wp = windowPicture(CGWindowID(card.windowNumber))
+        guard let before = wp ?? layerPicture(root, box.bounds.size) else { return }
+        if let dir = ProcessInfo.processInfo.environment["REDLINE_FRAMES"], let png = NSBitmapImageRep(cgImage: before).representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: "\(dir)/before_\(on ? "in" : "out").png"))      // testing only
+        }
+        let b = box.bounds, k = b.width / 672, hot = NSColor(Ink.nos), cool = NSColor(Ink.glows[Ink.glow])
+        let edgeColour = on ? hot : cool, dur = NOSMove.duration(on)      // out: a slower, smooth swipe down; the colour is always the look being switched TO
+        let fx = CALayer(); fx.frame = b; fx.masksToBounds = true; fx.zPosition = 100
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        // the old look, cut away by the moving line
+        let old = CALayer(); old.frame = b; old.contents = before; old.contentsGravity = .resize
+        let cut = CALayer(); cut.backgroundColor = NSColor.white.cgColor
+        cut.anchorPoint = on ? CGPoint(x: 0.5, y: 1) : CGPoint(x: 0.5, y: 0)          // in: eaten from the bottom up; out: from the top down
+        cut.bounds = b; cut.position = on ? CGPoint(x: b.midX, y: b.maxY) : CGPoint(x: b.midX, y: 0)
+        // a wash in the new look's colour over the part already revealed (it sits under the old picture, so it never mixes with the old colour)
+        let wash = CAGradientLayer(); wash.frame = b; wash.opacity = 0
+        wash.colors = [edgeColour.withAlphaComponent(0.28).cgColor, edgeColour.withAlphaComponent(0.04).cgColor]
+        wash.startPoint = CGPoint(x: 0.5, y: on ? 0 : 1); wash.endPoint = CGPoint(x: 0.5, y: on ? 1 : 0)
+        fx.addSublayer(wash)
+        old.mask = cut; fx.addSublayer(old)
+        // the hot line riding the cut: a wide glow, a bright band and a white core
+        let line = CALayer(); line.bounds = CGRect(x: 0, y: 0, width: b.width, height: 70 * k); line.position = CGPoint(x: b.midX, y: on ? 0 : b.maxY)
+        let glow = CAGradientLayer(); glow.frame = line.bounds
+        let core = on ? (edgeColour.blended(withFraction: 0.6, of: .white) ?? .white) : .white      // out: the bright white line
+        glow.colors = [edgeColour.withAlphaComponent(0), edgeColour.withAlphaComponent(on ? 0.45 : 0.55), core.withAlphaComponent(0.95), edgeColour.withAlphaComponent(on ? 0.45 : 0.55), edgeColour.withAlphaComponent(0)].map { $0.cgColor }
+        glow.locations = on ? [0, 0.40, 0.5, 0.60, 1] : [0, 0.38, 0.5, 0.62, 1]
+        line.addSublayer(glow); fx.addSublayer(line)
+        // shockwave rings from the big dial (in only)
+        let centre = CGPoint(x: 336 * k, y: b.maxY - 177 * k)
+        var rings: [CAShapeLayer] = []
+        do { for i in 0..<2 {
+            let r = CAShapeLayer(); let rad = 108 * k
+            r.path = CGPath(ellipseIn: CGRect(x: -rad, y: -rad, width: rad * 2, height: rad * 2), transform: nil); r.position = centre
+            r.fillColor = nil; r.strokeColor = (i == 0 ? core : edgeColour).cgColor; r.lineWidth = (i == 0 ? 3 : 9) * k; r.opacity = 0
+            r.shadowColor = edgeColour.cgColor; r.shadowRadius = 12 * k; r.shadowOpacity = 1; r.shadowOffset = .zero
+            fx.addSublayer(r); rings.append(r)
+        } }
+        root.addSublayer(fx)
+        CATransaction.commit()
+        let slow = Double(ProcessInfo.processInfo.environment["REDLINE_SLOW"] ?? "") ?? 1      // testing only: slow motion
+        if slow > 1 { fx.speed = Float(1 / slow) }
+
+        let ease = NOSMove.ease(on)      // in: a push that launches; out: a long coast
+        NOSMove.pending.append { t0 in
+        let curve = ease
+        func anim(_ key: String, _ from: Any, _ to: Any, _ d: CFTimeInterval, delay: CFTimeInterval = 0, _ f: CAMediaTimingFunction? = nil) -> CABasicAnimation {
+            let a = CABasicAnimation(keyPath: key); a.fromValue = from; a.toValue = to; a.duration = d; a.beginTime = t0 + delay
+            a.timingFunction = f ?? curve; a.fillMode = .both; a.isRemovedOnCompletion = false; return a
+        }
+        cut.add(anim("bounds.size.height", b.height, 0, dur), forKey: "cut")
+        line.add(anim("position.y", on ? -35 * k : b.maxY + 35 * k, on ? b.maxY + 35 * k : -35 * k, dur), forKey: "line")
+        let w = CAKeyframeAnimation(keyPath: "opacity"); w.values = [0, 1, 0]; w.keyTimes = [0, 0.5, 1]; w.duration = dur + 0.45
+        w.beginTime = t0; w.fillMode = .both; w.isRemovedOnCompletion = false; wash.add(w, forKey: "wash")
+        for (i, r) in rings.enumerated() {
+            let d = 0.75 + 0.15 * Double(i), lag = 0.05 * Double(i), out = CAMediaTimingFunction(name: .easeOut)
+            r.add(anim("transform.scale", 0.6, 4.2, d, delay: lag, out), forKey: "grow")
+            let o = CAKeyframeAnimation(keyPath: "opacity"); o.values = [0, 1, 0]; o.keyTimes = [0, 0.08, 1]; o.duration = d
+            o.beginTime = t0 + lag; o.fillMode = .both; o.isRemovedOnCompletion = false; r.add(o, forKey: "fade")
+        }
+        }
+        // gone completely afterwards: nothing left animating
+        DispatchQueue.main.asyncAfter(deadline: .now() + (dur + 0.8) * slow) { fx.removeFromSuperlayer() }
+    }
+    /// 30 times a second while the card is open: move the lights with the music (VIBE).
     private func pulse() {
         var levels = [Float](repeating: 0, count: AudioTap.bands), wave: [Float] = []
         let vibe = model.vibe && model.engine && !model.cranking && !model.eco && !model.nos      // ECO and NOS: no lights, no listening (NOS spends nothing on looks)
@@ -2016,16 +2334,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !tap.running { let why = tap.start(); if model.vibeNote != (why ?? "") { model.vibeNote = why ?? "" }; if why != nil { model.vibe = false } }
             levels = tap.read(); wave = tap.wave()
         } else if tap.running { tap.stop() }
-        if false {      // (NOS used to have its own animated heartbeat; NOS now spends nothing on looks), so it looks urgent even with nothing playing
-            let t = CACurrentMediaTime(), kick = Float(pow(max(0, sin(2 * Double.pi * 2.3 * t)), 8))
-            for b in 0..<levels.count {
-                let synth: Float = b < 6 ? kick : (b < 30 ? 0.30 + 0.25 * Float(sin(t * 3 + Double(b) * 0.4)) : 0.25 + 0.45 * kick)
-                levels[b] = max(levels[b], synth)
-            }
-        }
-        guard vibe || lit else { return }
-        lit = vibe
-        backdrop.set(levels, wave: wave)
+        // VIBE on: the underglow's own rig, moving with the music, starting from silence.
+        // VIBE off: just the waves, rolling slowly by themselves. NOS, ECO or engine off: the plain dark base, nothing moving.
+        if vibe { backdrop.quiet(false); backdrop.set(levels, wave: wave) }
+        else if model.engine && !model.cranking && !model.eco && !model.nos { backdrop.idle() }
+        else { backdrop.quiet(true) }
     }
     @objc func toggle() { card.isVisible ? close() : open() }
     // ---- Push to start ----
@@ -2069,6 +2382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func open() {
         model.setOpen(true)
+        pulse()                 // backdrop shown or hidden before the card appears
         fit(place: true)
         card.makeKeyAndOrderFront(nil)
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.pulse() }
