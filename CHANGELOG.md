@@ -26,8 +26,29 @@ Dates are when the change went live. Commit IDs link each entry to the code.
   - Everything is put back when NOS goes off, when Redline quits, or at the next start after a crash.
   - **Going in and out of NOS is animated**, on the card, the desktop and the Touch Bar at the same moment: in, a red-hot line sweeps up and the red fills in behind it, a shockwave leaves the big dial and the needles slam to the redline; out, the line wipes back down to the normal colours.
 - **The battery tile is ten cells.** Plugged in they are calm green; while charging the next cell breathes and a soft sheen glides across the charge. On battery they stand still, and at 15 % or less they turn red and the last cells blink. The preview pictures show the cells too.
-- **With VIBE off the waves keep rolling**, low and slow in the look's colours; the rest of the light show only runs with VIBE on.
+- **With VIBE off nothing moves behind the dials.** The slow waves that rolled there are gone: plain dark card, and the light show only with VIBE on. (The open card still uses about 15 % CPU with the engine on; that is the needles and numbers being redrawn every second, not the waves.)
 - The admin helper's Low Power Mode switch is used by NOS too (to switch it off).
+- **Engine off now really is off.** What I asked for: while Redline is loaded but not pushed on, it should cost as good as nothing, and every dial should be off.
+  Noticed: with the engine off Redline still sat at about 12 % CPU, and the gauges kept reading in the background.
+  Cause: the breathing ring around the start button was a SwiftUI animation that redrew 60 times a second for as long as the button was on screen; and the readings, the wallpaper check and the 30-a-second light timer never stopped with the engine.
+  Fix: the ring is now one layer animated by macOS itself; with the engine off nothing is read at all, no timer runs, the wallpaper pictures are dropped from memory, every dial, light and graph sits at rest and the menu bar needle is parked. Measured with the engine off: 0.0 % CPU with the card closed or open (was about 12 %), about 24 MB after a fresh start (was about 40). With the engine on, the light timer also stops during NOS and ECO, where nothing moves anyway.
+- **FANS works with the engine off.** Pressing it there holds both fans at maximum until I press it again or start the engine; it does not change my saved fan setting, and starting the engine goes back to that setting. If the Mac sleeps, the fans are put back to maximum after it wakes. Tested: maximum (5946 and 5446 rpm) and back to automatic, both with the engine off.
+- **The connected list is no longer looked up every 10 seconds.** That started two system tools each time. Now it is looked up when the engine starts, when the card opens, the moment something is plugged in or pulled out (macOS tells Redline), about once a minute while the card is open for wireless devices, and one last time when the engine stops.
+- **The separate push-to-start window is gone.** Noticed: it sat in the middle of the screen while the card showed the same button, and I could not close it without quitting Redline. The start button on the card is the only one now; in PUSH mode Redline simply waits in the menu bar.
+- VIBE cannot be pressed while the start button is up.
+- **Low Power Mode could be left on after NOS.**
+  Noticed: in a full test run, going ECO → NOS → off left Low Power Mode on although it had been off before.
+  Cause: Low Power Mode is switched in the background. Going straight from one mode to the other, the second mode noted "how it was before" while the first mode's switch-back had not happened yet, and later put that wrong state back.
+  Fix: the switches now run strictly one after the other, and a switch that is still on its way counts as the state. Tested in both directions, with Low Power Mode starting off and starting on.
+- **Bluetooth could be left off after ECO.**
+  Noticed: in a stress run of 150 rapid presses. Bluetooth takes a few seconds to really switch, so ECO off and straight on again noted "Bluetooth was off" and never switched it back on.
+  Fix: what was last asked for counts for a few seconds. Tested with fast ECO presses: Bluetooth back on every time.
+- **Two crashes at the ECO click (24 Nov, 01:23 and 01:31) explained and closed.** macOS stops a program on the spot when it touches Bluetooth while another program (a terminal, a script) is held responsible for it, which happens when Redline's program file is run directly instead of being opened as an app. ECO now leaves Bluetooth alone in that case instead of being stopped.
+- **Much less memory with the engine on.** The two full-screen wallpaper pictures for the NOS wipe were kept decoded the whole time, and macOS kept its own copies after a wipe: 76 MB with the engine on, about 180 MB once NOS had been used. They are now only held while the card is open and let go straight after a wipe: 54-58 MB with the card closed, before and after NOS.
+- **Other Macs:** a socket number outside 1-4 or a colour that cannot be mixed can no longer stop the app.
+- **Tested end to end (24 Nov):** fans in every state, quitting with the fans held, NOS and ECO on and off, quitting during NOS, a hard kill during NOS and during ECO (both undone at the next start), 150 rapid random presses without a crash, VIBE with real sound, no memory leaks.
+- Two fan presses in quick succession can no longer finish in the wrong order (they are now done one after the other).
+- The battery tile no longer shows the red low-battery warning when there is no battery reading.
 
 ### Fixed
 - **Switching NOS off replaced my wallpaper with a different picture.**

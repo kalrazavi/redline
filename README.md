@@ -4,9 +4,9 @@
 
 <p><img src="preview/look_vapor.png" width="460" alt="The Redline card with the engine running in the Vapor look: three dials, a column per CPU core, tiles for power, battery, thermals, network, disk and connected devices"></p>
 
-**Push to start.** When the Mac starts, it starts exactly as Apple made it. Redline opens the moment you log in, and a start button appears. Press it and the engine turns over: the needles and the Touch Bar rev together, two blips and then the redline, and your look, lights, fans and custom Touch Bar take over. Switch the engine off and the Mac is back to its own defaults.
+**Push to start.** When the Mac starts, it starts exactly as Apple made it. Redline loads the moment you log in and waits in the menu bar. Open the card, press the start button and the engine turns over: the needles and the Touch Bar rev together, two blips and then the redline, and your look, lights, fans and custom Touch Bar take over. Switch the engine off and the Mac is back to its own defaults.
 
-<p><img src="preview/start_gate.png" width="230" alt="The push-to-start window: a metal ENGINE START STOP button inside a ring of tick marks"> <img src="preview/panel_off.png" width="230" alt="The card with the engine off: gauges dimmed behind the start button"></p>
+<p><img src="preview/panel_off.png" width="230" alt="The card with the engine off: gauges dimmed behind the start button"></p>
 <p><img src="preview/touchbar/rev.png" width="700" alt="Four photos of the Touch Bar during an engine start: a first blip, a higher rev, everything at the redline, then running normally"></p>
 
 ## Why I built it
@@ -34,7 +34,7 @@ Copyright (c) 2026 Ali Razavi. All rights reserved. See `LICENSE`.
 
 - Click the needle in the menu bar to open the card.
 - **Engine**: with the engine off the Mac is exactly as Apple made it (Apple's Touch Bar, macOS fans, normal sleep). Starting it brings back your last look, VIBE, NOS, fans and the Touch Bar. The power button in the card's header switches it off.
-- **START · AUTO / PUSH** (footer): AUTO starts the engine by itself when Redline loads, with no rev. PUSH (default) shows a push-to-start window instead; pressing it revs the needles and the Touch Bar (two blips, then the redline) and switches everything on. The rev happens only then, never when the card is merely opened.
+- **START · AUTO / PUSH** (footer): AUTO starts the engine by itself when Redline loads, with no rev. PUSH (default) leaves the Mac alone until you press the start button on the card; pressing it revs the needles and the Touch Bar (two blips, then the redline) and switches everything on. The rev happens only then, never when the card is merely opened.
 - At log-in Redline starts straight away, with no waiting.
 - Drag the card by its background to move it. It has one fixed size.
 - Click anywhere outside the card, or press Esc, to close it.

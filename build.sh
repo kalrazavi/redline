@@ -68,7 +68,7 @@ P
 fi
 if [ -d "$G" ]; then
   # sign with the local certificate if the copy was made before it existed (harmless otherwise: the identity stays the same)
-  codesign -dv "$G" 2>&1 | grep -q "Authority=$SIGN" || [ "$SIGN" = "-" ] || codesign --force --sign "$SIGN" "$G"
+  codesign -dvv "$G" 2>&1 | grep -q "Authority=$SIGN" || [ "$SIGN" = "-" ] || codesign --force --sign "$SIGN" "$G"
   mkdir -p "$APP/Contents/Helpers"; cp -Rp "$G" "$APP/Contents/Helpers/Glowstrip.app"
 fi
 rm -rf build/icon.iconset; mkdir build/icon.iconset
