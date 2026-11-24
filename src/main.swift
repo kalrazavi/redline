@@ -579,8 +579,13 @@ enum NOSPaint {
     private static func check() {
         let fm = FileManager.default
         // only while the real wallpaper is showing: not during NOS, and not while the still copy stands in after NOS
-        guard !UserDefaults.standard.bool(forKey: "nos"), !fm.fileExists(atPath: Boost.wallStoreCopy) else { return }
+        guard !UserDefaults.standard.bool(forKey: "nos") else { return }
         let changed = (try? fm.attributesOfItem(atPath: Boost.wallStore)[.modificationDate] as? Date) ?? Date.distantPast
+        if fm.fileExists(atPath: Boost.wallStoreCopy) {
+            // a new wallpaper picked after NOS went off (before the live one was put back): keep it, forget the old one
+            guard Date().timeIntervalSince(changed) > 10, !Boost.oursShowing() else { return }
+            try? fm.removeItem(atPath: Boost.wallStoreCopy)
+        }
         let screen = NSScreen.main.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? ""
         let stamp = "\(Int(changed.timeIntervalSince1970)) \(screen)"
         guard Date().timeIntervalSince(changed) > 10,       // a wallpaper that was just switched may still be fading in
@@ -656,9 +661,16 @@ enum Boost {
             ws.addObserver(forName: n, object: nil, queue: .main) { _ in if !(UserDefaults.standard.bool(forKey: "nos")) { restoreWallpaper() } }
         }
     }
-    /// Puts the saved wallpaper store back and has macOS reload it.
+    /// Is one of Redline's own pictures (the red one, or the still copy after NOS) on the desktop right now?
+    static func oursShowing() -> Bool {
+        guard let d = FileManager.default.contents(atPath: wallStore) else { return false }
+        return ["/Redline/nos-wallpaper.png", "/Redline/wallpaper-normal.png"].contains { d.range(of: Data($0.utf8)) != nil }
+    }
+    /// Puts the saved wallpaper store back and has macOS reload it. Not if a new wallpaper was picked since NOS went off:
+    /// that choice is kept and the old one forgotten.
     static func restoreWallpaper() {
         guard let data = FileManager.default.contents(atPath: wallStoreCopy) else { return }
+        guard oursShowing() else { try? FileManager.default.removeItem(atPath: wallStoreCopy); return }
         try? data.write(to: URL(fileURLWithPath: wallStore), options: .atomic)
         _ = Probe.run("/usr/bin/killall", ["WallpaperAgent"])
         try? FileManager.default.removeItem(atPath: wallStoreCopy)

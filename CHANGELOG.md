@@ -18,6 +18,11 @@ Dates are when the change went live. Commit IDs link each entry to the code.
   - **No more light show.** The overdrive beams, strobe, sparks, heartbeat and flash cost 20-30 % CPU with the card open. NOS is now still: plain red card, red Touch Bar with no blinking or runner lights, no music listening.
   - **The whole Mac in NOS red:** red accent and highlight colour, and my own blue Sequoia wallpaper recoloured into NOS reds (same shapes and light rays, dark reds to hot red).
   - **Works with any wallpaper.** The red version is made by Redline itself from whatever wallpaper is on the Mac, and made again when the wallpaper changes. It photographs only macOS's wallpaper window, so desktop icons, open windows and the menu bar never end up in it. The first red picture had been made by hand from a screenshot, so on any other Mac (or after a new wallpaper) NOS would have had no red wallpaper or the wrong one; it also had a dark strip at the top where the menu bar had been.
+  - **Tested with a second wallpaper (Sonoma):** Redline made a red Sonoma by itself within half a minute, NOS swapped to it and back, and switching back to Sequoia gave a red Sequoia again.
+- **A wallpaper picked right after NOS could be overwritten.**
+  Noticed: while testing with another wallpaper.
+  Cause: after NOS, a still copy of the wallpaper stands in until the screen next sleeps, and then the saved live one is put back. A wallpaper picked in between would have been replaced by the old one.
+  Fix: Redline now checks whether its own picture is still on the desktop. If you picked something else, your choice is kept and the old one is forgotten.
   - Everything is put back when NOS goes off, when Redline quits, or at the next start after a crash.
   - **Going in and out of NOS is animated**, on the card, the desktop and the Touch Bar at the same moment: in, a red-hot line sweeps up and the red fills in behind it, a shockwave leaves the big dial and the needles slam to the redline; out, the line wipes back down to the normal colours.
 - **The battery tile is ten cells.** Plugged in they are calm green; while charging the next cell breathes and a soft sheen glides across the charge. On battery they stand still, and at 15 % or less they turn red and the last cells blink. The preview pictures show the cells too.
