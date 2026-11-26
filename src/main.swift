@@ -590,11 +590,11 @@ enum DesktopWipe {
         CATransaction.commit()
         windows = []; CATransaction.flush()
     }
-    static func run(from: String, to: String, up: Bool, colour: NSColor, set: () -> Void) {
+    static func run(from: String, to: String, up: Bool, colour: NSColor, screens: [NSScreen], set: () -> Void) {
         guard let old = picture(from), let new = picture(to) else { set(); return }
         clear()
         let dur = NOSMove.duration(up)      // exactly the card's timing, so both move as one
-        for sc in NSScreen.screens {
+        for sc in screens {
             let f = sc.frame
             let w = NSWindow(contentRect: f, styleMask: .borderless, backing: .buffered, defer: false)
             w.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)) + 1)
@@ -654,25 +654,49 @@ enum NOSPaint {
             guard Date().timeIntervalSince(changed) > 10, !Boost.oursShowing() else { return }
             try? fm.removeItem(atPath: Boost.wallStoreCopy)
         }
-        let screen = NSScreen.main.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? ""
-        let stamp = "\(Int(changed.timeIntervalSince1970)) \(screen)"
+        let stamp = NOSPaint.stamp()
         guard Date().timeIntervalSince(changed) > 10,       // a wallpaper that was just switched may still be fading in
               stamp != UserDefaults.standard.string(forKey: "nosPaintStamp") || !fm.fileExists(atPath: Boost.wallpaper) || !fm.fileExists(atPath: Boost.normalWallpaper)
         else { return }
         DispatchQueue.global(qos: .utility).async {
-            guard let normal = wallpaperOnly(), let red = recolour(normal) else { return }
+            // a capture that came out empty (the wallpaper window not drawn yet) is never kept: tried again at the next check
+            guard let normal = wallpaperOnly(), sane(normal), let red = recolour(normal), sane(red) else { return }
             try? fm.createDirectory(atPath: (Boost.wallpaper as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
             guard write(normal, Boost.normalWallpaper), write(red, Boost.wallpaper) else { return }
             DesktopWipe.forget(); DesktopWipe.warm()
             DispatchQueue.main.async { UserDefaults.standard.set(stamp, forKey: "nosPaintStamp") }
         }
     }
-    /// Only the wallpaper window of the main screen.
+    /// Names the wallpaper the pictures were made from: the choice in macOS's wallpaper store (without its dates, which change
+    /// by themselves) and the screen size. The pictures only count as ready while this still matches.
+    static func stamp() -> String {
+        let screen = NSScreen.screens.first.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? ""
+        guard let d = FileManager.default.contents(atPath: Boost.wallStore),
+              let p = try? PropertyListSerialization.propertyList(from: d, options: [], format: nil) else { return "v2 none \(screen)" }
+        var h: UInt64 = 1469598103934665603
+        for b in Boost.canon(p).utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return "v2 \(h) \(screen)"
+    }
+    /// A real picture: nothing see-through and not one flat colour.
+    static func sane(_ img: CGImage) -> Bool {
+        let n = 32; var px = [UInt8](repeating: 0, count: n * n * 4)
+        guard img.width > 16, img.height > 16,
+              let ctx = CGContext(data: &px, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: n, height: n))
+        var lo = [UInt8](repeating: 255, count: 3), hi = [UInt8](repeating: 0, count: 3)
+        for i in 0..<(n * n) {
+            if px[i * 4 + 3] < 250 { return false }
+            for c in 0..<3 { lo[c] = min(lo[c], px[i * 4 + c]); hi[c] = max(hi[c], px[i * 4 + c]) }
+        }
+        return (0..<3).contains { hi[$0] &- lo[$0] > 6 }
+    }
+    /// Only the wallpaper window of the first screen (the one with the menu bar), whichever screen is in use at the moment.
     static func wallpaperOnly() -> CGImage? {
         typealias Grab = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage"),
               let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        let size = NSScreen.main?.frame.size ?? .zero
+        let size = NSScreen.screens.first?.frame.size ?? .zero
         let walls = list.filter { ($0[kCGWindowOwnerName as String] as? String) == "Dock" && (($0[kCGWindowName as String] as? String) ?? "").hasPrefix("Wallpaper") }
         let main = walls.first { w in
             guard let b = w[kCGWindowBounds as String] as? [String: CGFloat] else { return false }
@@ -718,9 +742,11 @@ enum Boost {
     private static var watching = false
     static func leaveWallpaper() {
         guard FileManager.default.fileExists(atPath: wallStoreCopy) else { return }
-        guard FileManager.default.fileExists(atPath: normalWallpaper) else { restoreWallpaper(); return }
-        DesktopWipe.run(from: wallpaper, to: normalWallpaper, up: false, colour: NSColor(Ink.glows[Ink.glow])) {
-            for sc in NSScreen.screens { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: normalWallpaper), for: sc, options: [:]) }
+        // only the screens still wearing the red picture: a wallpaper picked during NOS stays exactly as it is
+        let mine = screens(showing: wallpaper)
+        guard !mine.isEmpty, FileManager.default.fileExists(atPath: normalWallpaper) else { restoreWallpaper(); return }
+        DesktopWipe.run(from: wallpaper, to: normalWallpaper, up: false, colour: NSColor(Ink.glows[Ink.glow]), screens: mine) {
+            for sc in mine { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: normalWallpaper), for: sc, options: [:]) }
         }
         guard !watching else { return }
         watching = true
@@ -729,20 +755,88 @@ enum Boost {
             ws.addObserver(forName: n, object: nil, queue: .main) { _ in if !(UserDefaults.standard.bool(forKey: "nos")) { restoreWallpaper() } }
         }
     }
+    static func screens(showing path: String) -> [NSScreen] {
+        let want = URL(fileURLWithPath: path).standardizedFileURL.path
+        return NSScreen.screens.filter { NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path == want }
+    }
+    static let ourMarks = ["/Redline/nos-wallpaper.png", "/Redline/wallpaper-normal.png"]
     /// Is one of Redline's own pictures (the red one, or the still copy after NOS) on the desktop right now?
     static func oursShowing() -> Bool {
         guard let d = FileManager.default.contents(atPath: wallStore) else { return false }
-        return ["/Redline/nos-wallpaper.png", "/Redline/wallpaper-normal.png"].contains { d.range(of: Data($0.utf8)) != nil }
+        return ourMarks.contains { d.range(of: Data($0.utf8)) != nil }
     }
-    /// Puts the saved wallpaper store back and has macOS reload it. Not if a new wallpaper was picked since NOS went off:
-    /// that choice is kept and the old one forgotten.
+    /// Does this part of the wallpaper store name one of Redline's own pictures?
+    static func isOurs(_ node: Any) -> Bool {
+        if let s = node as? String { return ourMarks.contains { s.contains($0) } }
+        if let d = node as? Data { return ourMarks.contains { d.range(of: Data($0.utf8)) != nil } }
+        if let a = node as? [Any] { return a.contains { isOurs($0) } }
+        if let m = node as? [String: Any] { return m.values.contains { isOurs($0) } }
+        return false
+    }
+    /// The store as text with its dates left out (macOS updates those by itself), keys in order: equal text = same wallpaper choice.
+    static func canon(_ node: Any) -> String {
+        if node is Date { return "" }
+        if let m = node as? [String: Any] { return "{" + m.keys.sorted().map { "\($0)=\(canon(m[$0]!))" }.joined(separator: ";") + "}" }
+        if let a = node as? [Any] { return "[" + a.map { canon($0) }.joined(separator: ",") + "]" }
+        if let d = node as? Data { return d.base64EncodedString() }
+        return "\(node)"
+    }
+    /// True if every desktop in the store is either Redline's picture or exactly what it was before NOS: nobody picked anything.
+    static func untouched(_ cur: [String: Any], _ saved: [String: Any]?) -> Bool {
+        for (k, v) in cur {
+            if k == "Desktop" {
+                if isOurs(v) { continue }
+                guard let s = saved?[k], canon(v) == canon(s) else { return false }
+            } else if let m = v as? [String: Any] {
+                if !untouched(m, saved?[k] as? [String: Any]) { return false }
+            }
+        }
+        return true
+    }
+    /// The store with every desktop that still shows Redline's picture put back to what it was before NOS. All others are left alone.
+    static func mended(_ cur: [String: Any], _ saved: [String: Any]?, _ spare: Any?) -> [String: Any] {
+        var out = cur
+        for (k, v) in cur {
+            if k == "Desktop" { if isOurs(v), let was = saved?[k] ?? spare { out[k] = was } }
+            else if let m = v as? [String: Any] { out[k] = mended(m, saved?[k] as? [String: Any], spare) }
+        }
+        return out
+    }
+    /// Puts the wallpaper from before NOS back wherever Redline's own picture is still showing, and has macOS reload it.
+    /// A wallpaper picked in the meantime wins: it is not touched, and if none of Redline's pictures is left nothing happens at all.
     static func restoreWallpaper() {
-        guard let data = FileManager.default.contents(atPath: wallStoreCopy) else { return }
-        guard oursShowing() else { try? FileManager.default.removeItem(atPath: wallStoreCopy); return }
-        try? data.write(to: URL(fileURLWithPath: wallStore), options: .atomic)
+        let fm = FileManager.default
+        guard let data = fm.contents(atPath: wallStoreCopy) else { return }
+        defer { try? fm.removeItem(atPath: wallStoreCopy) }
+        guard oursShowing(), !isOurs(data) else { return }       // (a copy that itself names our picture is no wallpaper to go back to)
+        var out = data
+        if let now = fm.contents(atPath: wallStore),
+           let cur = (try? PropertyListSerialization.propertyList(from: now, options: [], format: nil)) as? [String: Any],
+           let saved = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any],
+           !untouched(cur, saved) {
+            let spare = (saved["SystemDefault"] as? [String: Any])?["Desktop"] ?? (saved["AllSpacesAndDisplays"] as? [String: Any])?["Desktop"]
+            let fixed = mended(cur, saved, spare)
+            guard !isOurs(fixed), let d = try? PropertyListSerialization.data(fromPropertyList: fixed, format: .binary, options: 0) else { return }
+            out = d
+        }
+        try? out.write(to: URL(fileURLWithPath: wallStore), options: .atomic)
         _ = Probe.run("/usr/bin/killall", ["WallpaperAgent"])
-        try? FileManager.default.removeItem(atPath: wallStoreCopy)
     }
+    /// The screens NOS may dress in red right now. Only if the red picture was already made from the wallpaper that is showing
+    /// before NOS is switched on; never a blank, an outdated or a missing one, and never later while NOS is already on.
+    static func dressable() -> [NSScreen] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: wallpaper), fm.fileExists(atPath: normalWallpaper) else { return [] }
+        if fm.fileExists(atPath: wallStoreCopy) {       // the still copy from the last NOS is standing in: only where it still shows
+            let still = screens(showing: normalWallpaper)
+            if !still.isEmpty { return still }
+            if oursShowing() { return [] }
+            try? fm.removeItem(atPath: wallStoreCopy)       // something else was picked since: that is the wallpaper now
+        }
+        guard !oursShowing(), UserDefaults.standard.string(forKey: "nosPaintStamp") == NOSPaint.stamp() else { return [] }
+        return NSScreen.screens
+    }
+    private static var dress: [NSScreen] = []
     static func globalValue(_ k: String) -> Any? { UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?[k] }
     static func setGlobal(_ k: String, _ v: Any?) {
         var d = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain) ?? [:]
@@ -759,15 +853,18 @@ enum Boost {
         for k in ["AppleAccentColor", "AppleHighlightColor", "NSAppSleepDisabled"] { if let v = globalValue(k) { b[k] = v } }
         // The wallpaper: macOS keeps the real choice (including live ones like Sequoia, which are not picture files) in its
         // wallpaper store. A copy of that store is the only way to put back exactly what was there.
-        if FileManager.default.fileExists(atPath: wallpaper), !FileManager.default.fileExists(atPath: wallStoreCopy), let data = FileManager.default.contents(atPath: wallStore) { FileManager.default.createFile(atPath: wallStoreCopy, contents: data) }
+        dress = dressable()
+        if !dress.isEmpty, !FileManager.default.fileExists(atPath: wallStoreCopy), let data = FileManager.default.contents(atPath: wallStore) { FileManager.default.createFile(atPath: wallStoreCopy, contents: data) }
         UserDefaults.standard.set(b, forKey: "nosBefore")
     }
     static func engage() {
         Eco.brightness = 1; Eco.keys = 1
         setGlobal("AppleAccentColor", 0); setGlobal("AppleHighlightColor", "1.000000 0.733333 0.721569 Red"); setGlobal("NSAppSleepDisabled", true); colourChanged()
-        if FileManager.default.fileExists(atPath: wallpaper) {
-            let set = { for sc in NSScreen.screens { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: wallpaper), for: sc, options: [:]) } }
-            if FileManager.default.fileExists(atPath: normalWallpaper) { DesktopWipe.run(from: normalWallpaper, to: wallpaper, up: true, colour: NSColor(Ink.nos), set: set) } else { set() }
+        let on = dress; dress = []
+        if !on.isEmpty {
+            DesktopWipe.run(from: normalWallpaper, to: wallpaper, up: true, colour: NSColor(Ink.nos), screens: on) {
+                for sc in on { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: wallpaper), for: sc, options: [:]) }
+            }
         }
         Eco.wantLowPower(false)
     }

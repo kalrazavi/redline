@@ -51,6 +51,18 @@ Dates are when the change went live. Commit IDs link each entry to the code.
 - The battery tile no longer shows the red low-battery warning when there is no battery reading.
 
 ### Fixed
+- **NOS could leave me with a blank desktop (26 Nov).**
+  Noticed: after the Dock restarted during NOS, my wallpaper was gone and the desktop was one flat blue.
+  Cause: Redline makes the red wallpaper by photographing macOS's wallpaper window. That morning the window had not been drawn yet when the photo was taken, so both saved pictures (the red one and the still copy used when leaving NOS) were completely see-through. Nothing checked them. NOS had set the empty red picture as the wallpaper, and the Dock restart made macOS load it.
+  Fix: a photo that is see-through or one flat colour is thrown away and taken again at the next check; it is never saved and never shown.
+- **The wallpaper rules, written down and enforced.** What I asked for:
+  - Redline never removes my wallpaper.
+  - NOS on shows my current wallpaper in red. NOS off, engine off, or quitting Redline during NOS puts back exactly what was there before.
+  - If I pick another wallpaper during NOS, my pick wins: leaving NOS or quitting does nothing to it. Before, leaving NOS put the still copy over it and later the old wallpaper.
+  - With two screens, each screen is handled by itself: a screen where I picked something keeps it, a screen still showing the red picture goes back to its wallpaper from before NOS.
+  - The red wallpaper is only used if it was already made, from the wallpaper that is showing, before NOS was clicked. A missing, empty or outdated picture means NOS leaves the wallpaper alone, and it is never switched later while NOS is already on.
+  Also: the red picture is now always made from the screen with the menu bar. Before, it depended on which screen was in use at that moment.
+  Tested on both screens: no picture ready (wallpaper untouched), NOS on and off twice in a row, quitting during NOS (wallpaper settings identical to before), another wallpaper picked on one screen and on both, then NOS off, NOS on again and quit. Not tested: a real empty photo, and the live wallpaper coming back after the screen sleeps.
 - **Switching NOS off replaced my wallpaper with a different picture.**
   Noticed: after the first NOS test my blue wallpaper had become a forest photo.
   Cause: my wallpaper is Apple's live Sequoia wallpaper, which macOS draws in 3D. Asked which picture is on the desktop, macOS answers with a placeholder file (the forest), and Redline put that back.
